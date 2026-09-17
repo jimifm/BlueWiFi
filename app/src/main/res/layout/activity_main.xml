@@ -211,7 +211,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnKeyEnter"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="0dp"
                         android:layout_height="38dp"
                         android:layout_marginEnd="4dp"
@@ -222,7 +222,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnKeyBack"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="0dp"
                         android:layout_height="38dp"
                         android:layout_marginHorizontal="4dp"
@@ -233,7 +233,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnKeyHome"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="0dp"
                         android:layout_height="38dp"
                         android:layout_marginStart="4dp"
@@ -252,7 +252,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnKeyVolUp"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="0dp"
                         android:layout_height="38dp"
                         android:layout_marginEnd="4dp"
@@ -263,7 +263,7 @@
 
                     <com.google.android.material.button.MaterialButton
                         android:id="@+id/btnKeyVolDown"
-                        style="@style/Widget.MaterialComponents.Button.TonalButton"
+                        style="@style/Widget.MaterialComponents.Button.OutlinedButton"
                         android:layout_width="0dp"
                         android:layout_height="38dp"
                         android:layout_marginStart="4dp"
