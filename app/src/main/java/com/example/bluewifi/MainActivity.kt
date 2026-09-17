@@ -5,7 +5,10 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothProfile
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -38,6 +41,37 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     private lateinit var hidManager: BluetoothHidManager
     private lateinit var wifiScanManager: WifiScanManager
     private lateinit var wifiAdapter: WifiListAdapter
+    private var isBtReceiverRegistered = false
+
+    // 蓝牙状态广播接收器
+    private val bluetoothStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
+                if (state == BluetoothAdapter.STATE_ON) {
+                    binding.tvBtStatus.text = "检测到蓝牙已开启，正在请求外设服务..."
+                    binding.btnRetryBt.visibility = View.GONE
+                    hidManager.initialize()
+                } else if (state == BluetoothAdapter.STATE_OFF) {
+                    binding.tvBtStatus.text = "系统蓝牙已关闭，请开启蓝牙"
+                    binding.btnRetryBt.visibility = View.VISIBLE
+                    binding.viewStatusDot.backgroundTintList =
+                        ContextCompat.getColorStateList(this@MainActivity, R.color.status_disconnected)
+                }
+            }
+        }
+    }
+
+    // 引导开启蓝牙 launcher
+    private val enableBtLauncher = registerForActivityResult(
+        ActivityResultContracts.StartActivityForResult()
+    ) { result ->
+        if (result.resultCode == RESULT_OK) {
+            setupServices()
+        } else {
+            Toast.makeText(this, "蓝牙未开启，无法使用键鼠模拟与自动化功能", Toast.LENGTH_LONG).show()
+        }
+    }
 
     // 权限请求 launcher
     private val requestPermissionLauncher = registerForActivityResult(
@@ -48,7 +82,6 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             setupServices()
         } else {
             Toast.makeText(this, "需要授予蓝牙与定位权限以支持键鼠模拟及WLAN扫描", Toast.LENGTH_LONG).show()
-            // 依然尝试初始化可用服务
             setupServices()
         }
     }
@@ -62,6 +95,10 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         hidManager.listener = this
 
         wifiScanManager = WifiScanManager(this)
+
+        val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
+        registerReceiver(bluetoothStateReceiver, filter)
+        isBtReceiverRegistered = true
 
         initViews()
         loadPreferences()
@@ -96,6 +133,13 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
         // 触摸板事件监听
         binding.touchPadView.listener = this
+
+        // 重新初始化按钮
+        binding.btnRetryBt.setOnClickListener {
+            binding.btnRetryBt.visibility = View.GONE
+            binding.tvBtStatus.text = "正在重新连接蓝牙服务..."
+            hidManager.reinitialize()
+        }
 
         // 核心：一键回连目标热点手机
         binding.btnReconnectHost.setOnClickListener {
@@ -201,10 +245,23 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             return
         }
 
+        val adapter = hidManager.bluetoothAdapter
+        if (adapter != null && !adapter.isEnabled) {
+            Toast.makeText(this, "系统蓝牙未开启，正在请求开启...", Toast.LENGTH_SHORT).show()
+            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            return
+        }
+
+        if (!hidManager.isReady) {
+            Toast.makeText(this, "蓝牙外设服务正在初始化，请稍等片刻或点击【重新初始化】", Toast.LENGTH_SHORT).show()
+            hidManager.initialize()
+            return
+        }
+
         Toast.makeText(this, getString(R.string.msg_connecting_host, name), Toast.LENGTH_SHORT).show()
         val started = hidManager.connect(mac)
         if (!started) {
-            Toast.makeText(this, "蓝牙 HID 服务尚未就绪，请稍后重试", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "发起连接失败，请确认该设备已配对并在附近", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -239,9 +296,18 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     }
 
     private fun setupServices() {
+        val adapter = hidManager.bluetoothAdapter
+        if (adapter != null && !adapter.isEnabled) {
+            binding.tvBtStatus.text = "系统蓝牙未开启，正在请求开启..."
+            binding.btnRetryBt.visibility = View.VISIBLE
+            binding.viewStatusDot.backgroundTintList =
+                ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            enableBtLauncher.launch(Intent(BluetoothAdapter.ACTION_REQUEST_ENABLE))
+            return
+        }
+
         hidManager.initialize()
         updateCurrentConnectedWifi()
-        // 初始触发一次 WLAN 列表扫描展示
         performWifiScan()
     }
 
@@ -273,9 +339,14 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
     // === HidDeviceListener 回调处理 ===
 
+    override fun onStatusMessage(message: String) {
+        binding.tvBtStatus.text = message
+    }
+
     override fun onAppRegistered(registered: Boolean) {
         if (registered) {
             binding.tvBtStatus.text = getString(R.string.bt_status_ready)
+            binding.btnRetryBt.visibility = View.GONE
             binding.viewStatusDot.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_connecting)
 
@@ -290,6 +361,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             }
         } else {
             binding.tvBtStatus.text = getString(R.string.bt_status_uninitialized)
+            binding.btnRetryBt.visibility = View.VISIBLE
             binding.viewStatusDot.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_disconnected)
         }
@@ -301,6 +373,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                 val deviceName = device.name ?: "未知设备"
                 binding.tvBtStatus.text = getString(R.string.bt_status_connected, deviceName)
                 binding.tvConnectedDevice.text = "设备地址: ${device.address}"
+                binding.btnRetryBt.visibility = View.GONE
                 binding.viewStatusDot.backgroundTintList =
                     ContextCompat.getColorStateList(this, R.color.status_connected)
 
@@ -332,6 +405,9 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
     override fun onError(message: String) {
         binding.tvBtStatus.text = message
+        binding.btnRetryBt.visibility = View.VISIBLE
+        binding.viewStatusDot.backgroundTintList =
+            ContextCompat.getColorStateList(this, R.color.status_disconnected)
         Toast.makeText(this, message, Toast.LENGTH_SHORT).show()
     }
 
@@ -351,6 +427,14 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
     override fun onDestroy() {
         super.onDestroy()
+        if (isBtReceiverRegistered) {
+            try {
+                unregisterReceiver(bluetoothStateReceiver)
+            } catch (e: Exception) {
+                // ignore
+            }
+            isBtReceiverRegistered = false
+        }
         wifiScanManager.unregisterReceiver()
         hidManager.release()
     }

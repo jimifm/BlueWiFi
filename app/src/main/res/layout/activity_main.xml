@@ -64,6 +64,17 @@
                         android:textColor="@color/text_primary"
                         android:textSize="14sp"
                         android:textStyle="bold" />
+
+                    <com.google.android.material.button.MaterialButton
+                        android:id="@+id/btnRetryBt"
+                        style="@style/Widget.MaterialComponents.Button.TextButton"
+                        android:layout_width="wrap_content"
+                        android:layout_height="36dp"
+                        android:minWidth="0dp"
+                        android:paddingHorizontal="8dp"
+                        android:text="重新初始化"
+                        android:textSize="12sp"
+                        android:visibility="gone" />
                 </LinearLayout>
 
                 <!-- 当前绑定的目标热点手机 -->

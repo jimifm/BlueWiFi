@@ -4,8 +4,8 @@ import android.annotation.SuppressLint
 import android.bluetooth.BluetoothAdapter
 import android.bluetooth.BluetoothDevice
 import android.bluetooth.BluetoothHidDevice
-import android.bluetooth.BluetoothHidDeviceAppQosSettings
 import android.bluetooth.BluetoothHidDeviceAppSdpSettings
+import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.os.Handler
@@ -18,24 +18,52 @@ class BluetoothHidManager(private val context: Context) {
 
     companion object {
         private const val TAG = "BluetoothHidManager"
+        private const val PROXY_TIMEOUT_MS = 6000L
     }
 
-    private val bluetoothAdapter: BluetoothAdapter? = BluetoothAdapter.getDefaultAdapter()
-    private var hidDevice: BluetoothHidDevice? = null
-    private var isAppRegistered = false
-    private val mainHandler = Handler(Looper.getMainLooper())
-    private val executor = Executors.newSingleThreadExecutor()
+    private val bluetoothManager: BluetoothManager? =
+        context.getSystemService(Context.BLUETOOTH_SERVICE) as? BluetoothManager
+
+    val bluetoothAdapter: BluetoothAdapter?
+        get() = bluetoothManager?.adapter ?: BluetoothAdapter.getDefaultAdapter()
+
+    var hidDevice: BluetoothHidDevice? = null
+        private set
+
+    var isAppRegistered = false
+        private set
+
+    val isReady: Boolean
+        get() = hidDevice != null && isAppRegistered
 
     var connectedDevice: BluetoothDevice? = null
         private set
 
     var listener: HidDeviceListener? = null
 
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val executor = Executors.newSingleThreadExecutor()
+
+    private var isInitializing = false
+    private val timeoutRunnable = Runnable {
+        if (hidDevice == null && isInitializing) {
+            isInitializing = false
+            Log.w(TAG, "getProfileProxy timeout. HID Device profile not responding.")
+            listener?.onError("获取蓝牙外设服务超时！当前系统可能未开启 Bluetooth HID Device 支持，请尝试重启蓝牙或检查系统设置")
+        }
+    }
+
     private val serviceListener = object : BluetoothProfile.ServiceListener {
         override fun onServiceConnected(profile: Int, proxy: BluetoothProfile?) {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            isInitializing = false
+
             if (profile == BluetoothProfile.HID_DEVICE) {
-                Log.d(TAG, "Bluetooth HID Device profile connected")
+                Log.d(TAG, "Bluetooth HID Device profile connected successfully")
                 hidDevice = proxy as? BluetoothHidDevice
+                mainHandler.post {
+                    listener?.onStatusMessage("已获取蓝牙外设代理，正在向系统注册键鼠描述符...")
+                }
                 registerHidApp()
             }
         }
@@ -47,6 +75,7 @@ class BluetoothHidManager(private val context: Context) {
                 isAppRegistered = false
                 mainHandler.post {
                     listener?.onAppRegistered(false)
+                    listener?.onError("蓝牙外设服务已与系统断开")
                 }
             }
         }
@@ -54,10 +83,15 @@ class BluetoothHidManager(private val context: Context) {
 
     private val hidCallback = object : BluetoothHidDevice.Callback() {
         override fun onAppStatusChanged(pluggedDevice: BluetoothDevice?, registered: Boolean) {
-            Log.d(TAG, "onAppStatusChanged: registered = $registered")
+            Log.d(TAG, "onAppStatusChanged: registered = $registered, device = ${pluggedDevice?.address}")
             isAppRegistered = registered
             mainHandler.post {
                 listener?.onAppRegistered(registered)
+                if (registered) {
+                    listener?.onStatusMessage("蓝牙外设服务注册成功，随时可连接")
+                } else {
+                    listener?.onError("蓝牙外设服务已注销")
+                }
             }
         }
 
@@ -77,7 +111,6 @@ class BluetoothHidManager(private val context: Context) {
 
         override fun onGetReport(device: BluetoothDevice?, type: Byte, id: Byte, bufferSize: Int) {
             super.onGetReport(device, type, id, bufferSize)
-            // 设备请求报告，默认应答
             if (device != null && hidDevice != null) {
                 hidDevice?.reportError(device, BluetoothHidDevice.ERROR_RSP_SUCCESS)
             }
@@ -95,68 +128,105 @@ class BluetoothHidManager(private val context: Context) {
      * 初始化并获取 HID Device Profile Proxy
      */
     fun initialize() {
-        if (bluetoothAdapter == null) {
-            listener?.onError("当前设备不支持蓝牙")
+        val adapter = bluetoothAdapter
+        if (adapter == null) {
+            listener?.onError("当前设备不支持蓝牙硬件")
             return
         }
-        if (!bluetoothAdapter.isEnabled) {
-            listener?.onError("请先开启蓝牙")
+
+        if (!adapter.isEnabled) {
+            listener?.onError("系统蓝牙未开启，请先开启蓝牙")
+            return
         }
 
-        val success = bluetoothAdapter.getProfileProxy(
+        if (hidDevice != null && isAppRegistered) {
+            listener?.onAppRegistered(true)
+            return
+        }
+
+        isInitializing = true
+        mainHandler.removeCallbacks(timeoutRunnable)
+        mainHandler.postDelayed(timeoutRunnable, PROXY_TIMEOUT_MS)
+
+        mainHandler.post {
+            listener?.onStatusMessage("正在请求系统蓝牙外设服务 (HID Device Profile)...")
+        }
+
+        // 先尝试用 applicationContext 绑定服务
+        var success = adapter.getProfileProxy(
             context.applicationContext,
             serviceListener,
             BluetoothProfile.HID_DEVICE
         )
 
+        // 若失败，尝试使用 activity context 再次绑定
         if (!success) {
-            Log.e(TAG, "getProfileProxy returned false. HID Device may not be supported by this ROM.")
-            listener?.onError("当前系统未开启 Bluetooth HID Device 权限或不支持此特性")
+            Log.w(TAG, "getProfileProxy with applicationContext failed, trying direct context...")
+            success = adapter.getProfileProxy(
+                context,
+                serviceListener,
+                BluetoothProfile.HID_DEVICE
+            )
+        }
+
+        if (!success) {
+            mainHandler.removeCallbacks(timeoutRunnable)
+            isInitializing = false
+            Log.e(TAG, "getProfileProxy returned false. HID Device is not supported by this device/ROM.")
+            listener?.onError("当前手机系统 (ROM) 未启用 Bluetooth HID Device 特性，无法模拟外设")
         }
     }
 
     /**
+     * 重新初始化
+     */
+    fun reinitialize() {
+        release()
+        initialize()
+    }
+
+    /**
      * 注册 HID SDP 配置
+     * 传入 null QoS 保证各主流机型底层的最佳兼容性
      */
     private fun registerHidApp() {
-        val hid = hidDevice ?: return
+        val hid = hidDevice
+        if (hid == null) {
+            Log.e(TAG, "registerHidApp failed: hidDevice is null")
+            return
+        }
 
         val sdpSettings = BluetoothHidDeviceAppSdpSettings(
-            "BlueWiFi Combo Controller",
+            "BlueWiFi Mouse/Keyboard",
             "Android Bluetooth Mouse and Keyboard Combo",
-            "BlueWiFi Inc.",
+            "BlueWiFi",
             BluetoothHidDevice.SUBCLASS1_COMBO,
             HidConsts.COMBO_REPORT_DESCRIPTOR
         )
 
-        val inQos = BluetoothHidDeviceAppQosSettings(
-            BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
-            800,
-            9,
-            0,
-            11250,
-            BluetoothHidDeviceAppQosSettings.MAX
-        )
-
-        val outQos = BluetoothHidDeviceAppQosSettings(
-            BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
-            800,
-            9,
-            0,
-            11250,
-            BluetoothHidDeviceAppQosSettings.MAX
-        )
-
-        hid.registerApp(sdpSettings, inQos, outQos, executor, hidCallback)
+        try {
+            // QoS 传入 null，由底层蓝牙芯片使用最佳配置，避免因参数严格校验导致失败
+            val registered = hid.registerApp(sdpSettings, null, null, executor, hidCallback)
+            Log.d(TAG, "hid.registerApp returned: $registered")
+            if (!registered) {
+                mainHandler.post {
+                    listener?.onError("系统蓝牙拒绝注册外设描述符 (registerApp 返回 false)")
+                }
+            } else {
+                mainHandler.post {
+                    listener?.onStatusMessage("已提交描述符，等待系统确认就绪...")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "registerApp exception", e)
+            mainHandler.post {
+                listener?.onError("向系统注册外设异常: ${e.message}")
+            }
+        }
     }
 
     /**
      * 发送鼠标相对位移和按键报文
-     * @param dx X轴相对位移 (-127 ~ 127)
-     * @param dy Y轴相对位移 (-127 ~ 127)
-     * @param leftBtn 左键是否按下
-     * @param rightBtn 右键是否按下
-     * @param wheel 滚轮 (-127 ~ 127)
      */
     fun sendMouseReport(dx: Byte, dy: Byte, leftBtn: Boolean, rightBtn: Boolean, wheel: Byte = 0) {
         val device = connectedDevice ?: return
@@ -168,12 +238,16 @@ class BluetoothHidManager(private val context: Context) {
 
         val report = byteArrayOf(btnMask, dx, dy, wheel)
         executor.execute {
-            hid.sendReport(device, HidConsts.REPORT_ID_MOUSE.toInt(), report)
+            try {
+                hid.sendReport(device, HidConsts.REPORT_ID_MOUSE.toInt(), report)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending mouse report", e)
+            }
         }
     }
 
     /**
-     * 点击鼠标左键（按下并松开）
+     * 点击鼠标左键
      */
     fun clickLeftMouse() {
         sendMouseReport(0, 0, leftBtn = true, rightBtn = false)
@@ -183,7 +257,7 @@ class BluetoothHidManager(private val context: Context) {
     }
 
     /**
-     * 点击鼠标右键（按下并松开）
+     * 点击鼠标右键
      */
     fun clickRightMouse() {
         sendMouseReport(0, 0, leftBtn = false, rightBtn = true)
@@ -193,42 +267,50 @@ class BluetoothHidManager(private val context: Context) {
     }
 
     /**
-     * 单击指定键盘按键（按下并释放）
+     * 单击键盘按键
      */
     fun tapKey(keyCode: Byte, modifier: Byte = 0) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
 
         executor.execute {
-            // 按下
-            val pressReport = byteArrayOf(modifier, 0, keyCode, 0, 0, 0, 0, 0)
-            hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), pressReport)
+            try {
+                // 按下
+                val pressReport = byteArrayOf(modifier, 0, keyCode, 0, 0, 0, 0, 0)
+                hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), pressReport)
 
-            Thread.sleep(50)
+                Thread.sleep(50)
 
-            // 松开
-            val releaseReport = ByteArray(8)
-            hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), releaseReport)
+                // 松开
+                val releaseReport = ByteArray(8)
+                hid.sendReport(device, HidConsts.REPORT_ID_KEYBOARD.toInt(), releaseReport)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending keyboard key", e)
+            }
         }
     }
 
     /**
-     * 发送 Consumer Control 多媒体/系统键（音量、Home等）
+     * 发送 Consumer Control 多媒体/系统键
      */
     fun tapConsumerKey(consumerCode: Short) {
         val device = connectedDevice ?: return
         val hid = hidDevice ?: return
 
         executor.execute {
-            val byte1 = (consumerCode.toInt() and 0xFF).toByte()
-            val byte2 = ((consumerCode.toInt() shr 8) and 0xFF).toByte()
-            val pressReport = byteArrayOf(byte1, byte2)
-            hid.sendReport(device, HidConsts.REPORT_ID_CONSUMER.toInt(), pressReport)
+            try {
+                val byte1 = (consumerCode.toInt() and 0xFF).toByte()
+                val byte2 = ((consumerCode.toInt() shr 8) and 0xFF).toByte()
+                val pressReport = byteArrayOf(byte1, byte2)
+                hid.sendReport(device, HidConsts.REPORT_ID_CONSUMER.toInt(), pressReport)
 
-            Thread.sleep(50)
+                Thread.sleep(50)
 
-            val releaseReport = byteArrayOf(0, 0)
-            hid.sendReport(device, HidConsts.REPORT_ID_CONSUMER.toInt(), releaseReport)
+                val releaseReport = byteArrayOf(0, 0)
+                hid.sendReport(device, HidConsts.REPORT_ID_CONSUMER.toInt(), releaseReport)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error sending consumer key", e)
+            }
         }
     }
 
@@ -240,16 +322,25 @@ class BluetoothHidManager(private val context: Context) {
     }
 
     /**
-     * 主动向已配对的目标 Host 手机 (SIM卡手机) 发起 HID 鼠标/键盘连接
+     * 主动向已配对的目标 Host 手机 (SIM卡手机) 发起 HID 连接
      */
     fun connect(device: BluetoothDevice): Boolean {
         val hid = hidDevice
         if (hid == null) {
-            Log.w(TAG, "Cannot connect: BluetoothHidDevice service is not ready yet")
+            Log.w(TAG, "Cannot connect: hidDevice proxy is null")
+            return false
+        }
+        if (!isAppRegistered) {
+            Log.w(TAG, "Cannot connect: hid application is not registered yet")
             return false
         }
         Log.d(TAG, "Initiating HID connection to ${device.name} (${device.address})")
-        return hid.connect(device)
+        return try {
+            hid.connect(device)
+        } catch (e: Exception) {
+            Log.e(TAG, "Exception calling hid.connect", e)
+            false
+        }
     }
 
     /**
@@ -258,7 +349,11 @@ class BluetoothHidManager(private val context: Context) {
     fun connect(macAddress: String): Boolean {
         val adapter = bluetoothAdapter ?: return false
         if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) return false
-        val device = adapter.getRemoteDevice(macAddress)
+        val device = try {
+            adapter.getRemoteDevice(macAddress)
+        } catch (e: Exception) {
+            return false
+        }
         return connect(device)
     }
 
@@ -267,21 +362,34 @@ class BluetoothHidManager(private val context: Context) {
      */
     fun disconnect() {
         val device = connectedDevice ?: return
-        hidDevice?.disconnect(device)
+        try {
+            hidDevice?.disconnect(device)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error disconnecting", e)
+        }
     }
 
     /**
      * 释放资源
      */
     fun release() {
+        mainHandler.removeCallbacks(timeoutRunnable)
+        isInitializing = false
         try {
             hidDevice?.unregisterApp()
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering app", e)
         }
-        if (bluetoothAdapter != null && hidDevice != null) {
-            bluetoothAdapter.closeProfileProxy(BluetoothProfile.HID_DEVICE, hidDevice)
+        val adapter = bluetoothAdapter
+        val hid = hidDevice
+        if (adapter != null && hid != null) {
+            try {
+                adapter.closeProfileProxy(BluetoothProfile.HID_DEVICE, hid)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error closing profile proxy", e)
+            }
         }
-        executor.shutdown()
+        hidDevice = null
+        isAppRegistered = false
     }
 }

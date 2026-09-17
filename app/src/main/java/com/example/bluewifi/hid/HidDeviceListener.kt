@@ -14,6 +14,11 @@ interface HidDeviceListener {
     fun onDeviceStateChanged(device: BluetoothDevice, state: Int)
 
     /**
+     * 过程状态变化提示
+     */
+    fun onStatusMessage(message: String)
+
+    /**
      * 错误信息回调
      */
     fun onError(message: String)
