@@ -1,0 +1,28 @@
+<resources>
+    <string name="app_name">蓝牙键鼠与WLAN终端</string>
+    <string name="bt_status_uninitialized">蓝牙服务正在初始化...</string>
+    <string name="bt_status_ready">蓝牙 HID 服务已注册，等待连接</string>
+    <string name="bt_status_connecting">正在连接目标设备...</string>
+    <string name="bt_status_connected">已作为键鼠连接到：%1$s</string>
+    <string name="bt_status_disconnected">蓝牙已断开</string>
+    <string name="bt_status_unsupported">当前手机系统不支持蓝牙 HID 模拟(Profile未开启)</string>
+
+    <string name="btn_make_discoverable">开启蓝牙可发现模式</string>
+    <string name="btn_scan_wifi">刷新 WLAN 列表</string>
+    <string name="btn_open_wifi_settings">打开系统 WLAN 设置</string>
+
+    <string name="touchpad_hint">滑动以控制鼠标 | 轻击左键 | 双指/右下角右键</string>
+    <string name="btn_left_click">鼠标左键</string>
+    <string name="btn_right_click">鼠标右键</string>
+    <string name="btn_key_enter">回车(Enter)</string>
+    <string name="btn_key_back">返回(Esc)</string>
+    <string name="btn_key_home">主页(Home)</string>
+    <string name="btn_key_vol_up">音量+</string>
+    <string name="btn_key_vol_down">音量-</string>
+
+    <string name="wifi_section_title">周围 WLAN 列表 (连接成功后自动刷新)</string>
+    <string name="wifi_current_connected">当前终端 WLAN: %1$s</string>
+    <string name="wifi_scanning">正在扫描周围 WLAN 信号...</string>
+    <string name="wifi_empty">暂无扫描结果，请点击右上角刷新</string>
+    <string name="auto_refresh_notice">蓝牙连接成功！已自动为您刷新终端 WLAN 列表</string>
+</resources>
