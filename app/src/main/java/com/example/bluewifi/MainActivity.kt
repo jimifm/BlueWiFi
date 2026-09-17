@@ -168,7 +168,8 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             hidManager.tapKey(HidConsts.KEY_ENTER)
         }
         binding.btnKeyBack.setOnClickListener {
-            hidManager.tapKey(HidConsts.KEY_ESCAPE)
+            // 在 Android 手机上，鼠标右键默认就是全局“返回”操作
+            hidManager.clickRightMouse()
         }
         binding.btnKeyHome.setOnClickListener {
             hidManager.tapConsumerKey(HidConsts.CONSUMER_HOME)

@@ -8,6 +8,41 @@ object HidConsts {
     const val REPORT_ID_CONSUMER: Byte = 3
 
     /**
+     * 标准蓝牙纯鼠标 HID Report Descriptor (像"妙妙触控"一样的标准无线鼠标)
+     * 52 字节标准无 Report ID 单设备定义，全平台 (Android/iOS/PC) 免驱原生完美支持
+     * 报文格式固定 4 字节: [ButtonMask, dx, dy, wheel]
+     */
+    val MOUSE_REPORT_DESCRIPTOR = byteArrayOf(
+        0x05.toByte(), 0x01.toByte(), // USAGE_PAGE (Generic Desktop)
+        0x09.toByte(), 0x02.toByte(), // USAGE (Mouse)
+        0xA1.toByte(), 0x01.toByte(), // COLLECTION (Application)
+        0x09.toByte(), 0x01.toByte(), //   USAGE (Pointer)
+        0xA1.toByte(), 0x00.toByte(), //   COLLECTION (Physical)
+        0x05.toByte(), 0x09.toByte(), //     USAGE_PAGE (Button)
+        0x19.toByte(), 0x01.toByte(), //     USAGE_MINIMUM (Button 1)
+        0x29.toByte(), 0x03.toByte(), //     USAGE_MAXIMUM (Button 3)
+        0x15.toByte(), 0x00.toByte(), //     LOGICAL_MINIMUM (0)
+        0x25.toByte(), 0x01.toByte(), //     LOGICAL_MAXIMUM (1)
+        0x95.toByte(), 0x03.toByte(), //     REPORT_COUNT (3)
+        0x75.toByte(), 0x01.toByte(), //     REPORT_SIZE (1)
+        0x81.toByte(), 0x02.toByte(), //     INPUT (Data,Var,Abs) - 3 bits for Buttons (Left, Right, Middle)
+        0x95.toByte(), 0x01.toByte(), //     REPORT_COUNT (1)
+        0x75.toByte(), 0x05.toByte(), //     REPORT_SIZE (5)
+        0x81.toByte(), 0x03.toByte(), //     INPUT (Cnst,Var,Abs) - 5 bits Padding
+        0x05.toByte(), 0x01.toByte(), //     USAGE_PAGE (Generic Desktop)
+        0x09.toByte(), 0x30.toByte(), //     USAGE (X)
+        0x09.toByte(), 0x31.toByte(), //     USAGE (Y)
+        0x09.toByte(), 0x38.toByte(), //     USAGE (Wheel)
+        0x15.toByte(), 0x81.toByte(), //     LOGICAL_MINIMUM (-127)
+        0x25.toByte(), 0x7F.toByte(), //     LOGICAL_MAXIMUM (127)
+        0x75.toByte(), 0x08.toByte(), //     REPORT_SIZE (8)
+        0x95.toByte(), 0x03.toByte(), //     REPORT_COUNT (3)
+        0x81.toByte(), 0x06.toByte(), //     INPUT (Data,Var,Rel) - 3 bytes X, Y, Wheel
+        0xC0.toByte(),                //   END_COLLECTION
+        0xC0.toByte()                 // END_COLLECTION
+    )
+
+    /**
      * Combo HID Report Descriptor
      * 包含：
      * 1. 键盘 (Report ID 1, 8字节: 1字节修饰键 + 1字节保留 + 6字节键码)

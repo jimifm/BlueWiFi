@@ -187,7 +187,7 @@ class BluetoothHidManager(private val context: Context) {
 
     /**
      * 注册 HID SDP 配置
-     * 传入 null QoS 保证各主流机型底层的最佳兼容性
+     * 采用对标“妙妙触控”的标准纯蓝牙鼠标描述符与多重回退注册策略
      */
     private fun registerHidApp() {
         val hid = hidDevice
@@ -196,37 +196,82 @@ class BluetoothHidManager(private val context: Context) {
             return
         }
 
-        val sdpSettings = BluetoothHidDeviceAppSdpSettings(
-            "BlueWiFi Mouse/Keyboard",
-            "Android Bluetooth Mouse and Keyboard Combo",
-            "BlueWiFi",
-            BluetoothHidDevice.SUBCLASS1_COMBO,
-            HidConsts.COMBO_REPORT_DESCRIPTOR
+        // 1. 清理旧应用状态残留，防止因重复注册被系统直接返回 false
+        try {
+            hid.unregisterApp()
+        } catch (e: Exception) {
+            // ignore
+        }
+
+        // 2. 对标“妙妙触控”的标准纯蓝牙鼠标 SDP 配置
+        val mouseSdp = BluetoothHidDeviceAppSdpSettings(
+            "Bluetooth Mouse",
+            "Wireless Bluetooth Optical Mouse",
+            "Android",
+            BluetoothHidDevice.SUBCLASS1_MOUSE,
+            HidConsts.MOUSE_REPORT_DESCRIPTOR
         )
 
+        val qos = BluetoothHidDeviceAppQosSettings(
+            BluetoothHidDeviceAppQosSettings.SERVICE_BEST_EFFORT,
+            800,
+            9,
+            0,
+            11250,
+            BluetoothHidDeviceAppQosSettings.MAX
+        )
+
+        var registered = false
+
+        // 策略 A: 纯鼠标 + 标准 QoS (符合大部分官方规范栈)
         try {
-            // QoS 传入 null，由底层蓝牙芯片使用最佳配置，避免因参数严格校验导致失败
-            val registered = hid.registerApp(sdpSettings, null, null, executor, hidCallback)
-            Log.d(TAG, "hid.registerApp returned: $registered")
-            if (!registered) {
-                mainHandler.post {
-                    listener?.onError("系统蓝牙拒绝注册外设描述符 (registerApp 返回 false)")
-                }
-            } else {
-                mainHandler.post {
-                    listener?.onStatusMessage("已提交描述符，等待系统确认就绪...")
-                }
-            }
+            Log.d(TAG, "Registering strategy A: Pure Mouse with QoS...")
+            registered = hid.registerApp(mouseSdp, qos, qos, executor, hidCallback)
         } catch (e: Exception) {
-            Log.e(TAG, "registerApp exception", e)
+            Log.w(TAG, "Strategy A exception", e)
+        }
+
+        // 策略 B: 纯鼠标 + null QoS (部分 ROM 驱动要求 QoS 为 null)
+        if (!registered) {
+            try {
+                Log.d(TAG, "Registering strategy B: Pure Mouse with null QoS...")
+                registered = hid.registerApp(mouseSdp, null, null, executor, hidCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "Strategy B exception", e)
+            }
+        }
+
+        // 策略 C: 备用 Combo 复合描述符
+        if (!registered) {
+            val comboSdp = BluetoothHidDeviceAppSdpSettings(
+                "Bluetooth Combo",
+                "Android Combo Controller",
+                "Android",
+                BluetoothHidDevice.SUBCLASS1_COMBO,
+                HidConsts.COMBO_REPORT_DESCRIPTOR
+            )
+            try {
+                Log.d(TAG, "Registering strategy C: Combo Descriptor...")
+                registered = hid.registerApp(comboSdp, null, null, executor, hidCallback)
+            } catch (e: Exception) {
+                Log.w(TAG, "Strategy C exception", e)
+            }
+        }
+
+        Log.d(TAG, "Final registerApp result: $registered")
+        if (registered) {
             mainHandler.post {
-                listener?.onError("向系统注册外设异常: ${e.message}")
+                listener?.onStatusMessage("已成功提交鼠标外设描述符，等待系统就绪...")
+            }
+        } else {
+            mainHandler.post {
+                listener?.onError("系统蓝牙底层拒绝注册描述符，请尝试开关一次蓝牙后点击重试")
             }
         }
     }
 
     /**
-     * 发送鼠标相对位移和按键报文
+     * 发送鼠标相对位移和按键报文 (纯鼠标无 Report ID，ID 传 0)
      */
     fun sendMouseReport(dx: Byte, dy: Byte, leftBtn: Boolean, rightBtn: Boolean, wheel: Byte = 0) {
         val device = connectedDevice ?: return
@@ -239,7 +284,7 @@ class BluetoothHidManager(private val context: Context) {
         val report = byteArrayOf(btnMask, dx, dy, wheel)
         executor.execute {
             try {
-                hid.sendReport(device, HidConsts.REPORT_ID_MOUSE.toInt(), report)
+                hid.sendReport(device, 0, report)
             } catch (e: Exception) {
                 Log.e(TAG, "Error sending mouse report", e)
             }
