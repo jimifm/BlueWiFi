@@ -1,9 +1,56 @@
-# BlueWiFi - 蓝牙键鼠外设模拟与 WLAN 自动刷新 App
+# BlueWiFi - 备用机无感蹭网神器 (蓝牙 HID 鼠标模拟 & 自动热点触发)
 
-本项目为标准的 Android Studio 工程。实现的功能为：
-1. **蓝牙 HID 复合设备模拟**：当前手机/终端作为蓝牙鼠标与键盘，对外广播可被发现，另一台安卓手机搜索并配对连接；
-2. **状态感知与自动联动刷新**：当另一台手机连接成功后，当前终端自动触发 **WLAN 扫描刷新**，并在界面中实时列出周围 Wi-Fi 信号（SSID、信号百分比、加密方式等），同时支持一键调起系统原生 WLAN 设置页面；
-3. **键鼠交互验证**：界面内嵌触控板（支持指针移动、单击左键、双指/右下角右键）及常用快捷键盘按键（Enter、Esc、Home、音量加减），可在另一台手机上直观验证控制效果。
+> **项目痛点与背景**：
+> 一台无 SIM 卡的备用手机需要经常蹭另一台有 SIM 卡手机的网络。常规做法是：每次都要拿出 SIM 卡手机 -> 解锁 -> 手动打开便携式热点 -> 备用机打开 WLAN 寻找热点连接，过程繁琐且割裂。
+>
+> 即使在 SIM 卡手机上配置了自动化场景（如“检测到备用机蓝牙连接时自动开热点”），但由于 Android 手机间普通蓝牙协议的限制，手机间无法像蓝牙耳机、手环、鼠标那样一开机就自动重新连接通信通道，往往需要重新配对。
+>
+> **本项目的巧妙解法**：
+> 备用机通过 Android 原生 `BluetoothHidDevice` API 将自身**模拟成一个标准蓝牙无线鼠标（HID 外设）**。SIM 卡手机会将其作为外设信任，从而支持开机直接主动重连！连接建立后，主机自动触发规则打开热点，备用机 App 自动刷新并展示 WLAN 列表，实现一气呵成的“无感蹭网”闭环！
+
+---
+
+## 自动化闭环全景图
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Slave as 备用机 (本App / HID鼠标)
+    participant Master as SIM卡手机 (热点主机)
+    participant Scene as 主机自动化场景 (Tasker/智慧场景)
+    participant Wifi as 备用机 WLAN 管理
+
+    Note over Slave, Master: 首次：备用机开启可发现，主机蓝牙配对绑定
+    Note over Slave: 后续日常使用：
+    Slave->>Master: 启动 App 或点击【一键重连热点手机】(发送 HID Connect)
+    Master-->>Slave: 作为蓝牙鼠标外设接受连接 (无需重新配对)
+    Master->>Scene: 触发系统事件：指定蓝牙外设已连接
+    Scene->>Master: 自动开启便携式 Wi-Fi 热点 (AP)
+    Slave->>Slave: 监听到蓝牙 HID 连接成功 (STATE_CONNECTED)
+    Slave->>Wifi: 自动触发 startScan() 扫描 WLAN
+    Wifi-->>Slave: 刷新周围 Wi-Fi 列表 (发现主机热点并自动接入)
+    Note over Slave, Master: 整个过程无需触碰 SIM 卡手机，即刻畅快上网！
+```
+
+---
+
+## 核心功能特色
+
+1. **HID 鼠标/外设主动重连 (核心利器)**
+   - 突破 Android 手机间普通蓝牙无法自动重连的限制，通过 `BluetoothHidDevice.connect(device)` 对已绑定的 SIM 卡主机发起主动回连。
+   - 提供**【绑定/选择热点机】**功能，从已配对设备中一键选择并永久记忆。
+   - 支持**【启动 App 时自动重连热点机】**开关，真正做到“打开 App 即可触发热点并刷新网络”。
+2. **连接成功自动刷新 WLAN 列表**
+   - 监听 HID Profile 连接回调，连接成功瞬间自动调用 `WifiManager.startScan()` 刷新周围热点。
+   - 列表实时呈现 Wi-Fi 名称、BSSID、信号百分比、2.4G/5G 频段与加密协议。
+   - 提供一键跳转系统原生 WLAN 设置面板。
+3. **真实鼠标与键盘功能测试面板**
+   - 内置**触控板 (TouchPad)**：在备用机屏幕滑动手指，SIM 卡手机上会出现真实的鼠标指针并同步位移。
+   - 支持单指轻击左键、双指/右下角轻击右键。
+   - 常用功能键：回车 (Enter)、返回 (Esc)、主页 (Home)、音量加减等，直观验证外设控制。
+4. **CI/CD 自动化持续集成**
+   - 集成 GitHub Actions 工作流（[main.yml](.github/workflows/main.yml)），每次 push 或 PR 自动通过 JDK 17 与 Gradle 8.5 编译生成 Debug APK。
+   - 支持 打 Tag（v*）自动触发 Release 发布（[release.yml](.github/workflows/release.yml)）。
 
 ---
 
@@ -11,77 +58,48 @@
 
 ```
 blueWiFi/
-├── build.gradle.kts                      # 根构建脚本
-├── settings.gradle.kts                   # 模块配置
-├── gradle.properties                     # Gradle 全局参数
+├── .github/
+│   └── workflows/
+│       ├── main.yml                      # CI 自动编译并产出 APK 制品
+│       └── release.yml                   # Release 发布流水线
 ├── app/
-│   ├── build.gradle.kts                  # App 模块构建脚本 (minSdk 28, targetSdk 34)
-│   ├── proguard-rules.pro                # 混淆规则
-│   └── src/
-│       └── main/
-│           ├── AndroidManifest.xml       # 权限与应用配置
-│           ├── java/com/example/bluewifi/
-│           │   ├── MainActivity.kt       # 权限、生命周期、连接回调与 UI 驱动
-│           │   ├── hid/
-│           │   │   ├── HidConsts.kt      # Combo HID 描述符与标准键码
-│           │   │   ├── HidDeviceListener.kt
-│           │   │   └── BluetoothHidManager.kt # BluetoothHidDevice 注册与报文上报
-│           │   ├── wifi/
-│           │   │   ├── WifiItem.kt       # Wi-Fi 实体
-│           │   │   └── WifiScanManager.kt # WifiManager 扫描与广播监听
-│           │   └── ui/
-│           │       ├── TouchPadView.kt   # 自定义鼠标触控板 View
-│           │       └── WifiListAdapter.kt# WLAN 列表 RecyclerView 适配器
-│           └── res/
-│               ├── layout/               # 界面与列表项 XML
-│               └── values/               # 颜色、文字与主题
+│   ├── build.gradle.kts                  # minSdk 28 (Android 9.0+), targetSdk 34
+│   └── src/main/
+│       ├── AndroidManifest.xml           # 适配 Android 9 ~ 14 完整蓝牙与 WLAN 权限
+│       ├── java/com/example/bluewifi/
+│       │   ├── MainActivity.kt           # 主控中枢：热点机绑定、自动回连与 WLAN 联动
+│       │   ├── hid/
+│       │   │   ├── HidConsts.kt          # Combo HID 描述符及标准键码
+│       │   │   ├── HidDeviceListener.kt
+│       │   │   └── BluetoothHidManager.kt# BluetoothHidDevice 生命周期与报文驱动
+│       │   ├── wifi/
+│       │   │   ├── WifiItem.kt           # Wi-Fi 实体模型
+│       │   │   └── WifiScanManager.kt    # WLAN 扫描、广播监听与系统设置跳转
+│       │   └── ui/
+│       │       ├── TouchPadView.kt       # 鼠标触控板自定义 View
+│       │       └── WifiListAdapter.kt    # WLAN 列表 RecyclerView 适配器
+│       └── res/                          # 布局与主题资源
+├── gradlew / gradlew.bat                 # Gradle 包装脚本
+└── settings.gradle.kts
 ```
 
 ---
 
-## 核心实现说明
+## 落地使用指南
 
-### 1. 蓝牙 HID Device API
-- 基于 Android 9 (API 28) 引入的 `BluetoothHidDevice` 原生 API；
-- 采用包含 **键盘 (Report ID 1)**、**鼠标 (Report ID 2)** 和 **多媒体 Consumer Control (Report ID 3)** 的标准复合描述符；
-- 注册 `BluetoothHidDevice.Callback`，监听目标设备的连接与断开事件。
+### 一、SIM 卡手机设置（一次性）
+使用 SIM 卡手机自带的“智慧生活/快捷指令/任务自动化/Tasker”设置一条场景规则：
+- **触发条件**：蓝牙连接到指定设备（即运行本 App 的备用机名称）；
+- **执行动作**：开启个人热点（便携式 WLAN 热点）。
 
-### 2. 联动 WLAN 扫描与刷新
-- 监听回调 `onConnectionStateChanged(device, state)`；
-- 当 `state == BluetoothProfile.STATE_CONNECTED` 时：
-  - 触发 `wifiScanManager.startScan()` 进行就地扫描刷新；
-  - 界面展示周围 Wi-Fi 列表，并弹出提示告知用户；
-  - 提供 `openWifiSettings()` 调起系统原生设置页面。
+### 二、备用机初次配对（一次性）
+1. 备用机打开本 App，授予蓝牙与定位权限；
+2. 点击界面的 **【开启蓝牙可发现模式】**；
+3. SIM 卡手机进入蓝牙搜索界面，搜索并与备用机完成首次配对；
+4. 配对完成后，在备用机 App 中点击 **【绑定/选择热点机】**，选中该 SIM 卡手机；
+5. 可勾选 **【启动 App 时自动重连热点机】**。
 
-### 3. Android 权限适配
-- Android 12+ 运行时权限：`BLUETOOTH_CONNECT`, `BLUETOOTH_ADVERTISE`, `BLUETOOTH_SCAN`；
-- Wi-Fi 与定位权限：`ACCESS_FINE_LOCATION`, `ACCESS_COARSE_LOCATION`，以及 Android 13+ 的 `NEARBY_WIFI_DEVICES`。
-
----
-
-## 使用与测试指南
-
-### 第一步：导入与编译
-1. 打开 **Android Studio**；
-2. 选择 **Open**，选择 `e:\worktab\repo\blueWiFi` 目录；
-3. 等待 Gradle 同步完成；
-4. 连接已开启“开发者选项”和“USB 调试”的 Android 手机（需 Android 9.0 或以上版本）；
-5. 点击 **Run 'app'** 安装到手机（设为“手机 A”）。
-
-### 第二步：蓝牙配对与连接
-1. 在手机 A 上打开 App，按弹窗提示授予蓝牙与定位权限；
-2. 点击界面上的 **【开启蓝牙可发现模式】** 按钮；
-3. 拿出另一台安卓手机（设为“手机 B”）：
-   - 打开系统【设置】->【蓝牙】；
-   - 搜索可用设备，找到手机 A，点击配对并连接；
-4. 手机 B 会将手机 A 识别为**输入设备（键盘与鼠标）**。
-
-### 第三步：验证联动与控制
-1. **自动刷新验证**：
-   - 手机 B 成功连入瞬间，手机 A 状态变为绿色“已作为键鼠连接到：[手机B名称]”；
-   - 手机 A 界面自动弹出通知：“蓝牙连接成功！已自动为您刷新终端 WLAN 列表”；
-   - 手机 A 下方的 WLAN 列表自动刷新出周围的 Wi-Fi 热点。
-2. **键鼠功能验证**：
-   - 在手机 A 的【鼠标触摸板】滑动手指，手机 B 屏幕上将出现鼠标光标并跟随移动；
-   - 在手机 A 触摸板轻击或点击【鼠标左键】，手机 B 响应点击；
-   - 点击手机 A 的【回车】、【返回】或【主页】按钮，手机 B 响应对应的按键动作。
+### 三、日常使用（极速闭环）
+- 备用机打开 App（或点击界面上的 **【一键重连热点手机 (触发热点)】**）；
+- 备用机作为鼠标外设主动连上 SIM 卡手机，SIM 卡手机感知到外设连入立刻自动开启热点；
+- 备用机感知到连接成功，自动开始就地刷新 WLAN 列表并连接上网！

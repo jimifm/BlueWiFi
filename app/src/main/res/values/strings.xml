@@ -24,5 +24,12 @@
     <string name="wifi_current_connected">当前终端 WLAN: %1$s</string>
     <string name="wifi_scanning">正在扫描周围 WLAN 信号...</string>
     <string name="wifi_empty">暂无扫描结果，请点击右上角刷新</string>
-    <string name="auto_refresh_notice">蓝牙连接成功！已自动为您刷新终端 WLAN 列表</string>
+    <string name="auto_refresh_notice">蓝牙连接成功！已触发主机热点，正在刷新 WLAN 列表</string>
+    <string name="btn_reconnect_host">一键重连热点手机 (触发热点)</string>
+    <string name="btn_bind_host">绑定/选择热点机</string>
+    <string name="title_bound_host">目标热点手机: %1$s</string>
+    <string name="status_unbound_host">未绑定热点手机 (请先配对并绑定)</string>
+    <string name="switch_auto_connect">启动 App 时自动重连热点机</string>
+    <string name="msg_connecting_host">正在作为鼠标主动连接：%1$s ...</string>
+    <string name="msg_host_connected">连接成功！主机已作为热点被唤醒，正刷新WLAN</string>
 </resources>

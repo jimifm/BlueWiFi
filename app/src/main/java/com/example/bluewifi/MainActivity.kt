@@ -27,6 +27,13 @@ import com.google.android.material.snackbar.Snackbar
 @SuppressLint("MissingPermission")
 class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchPadListener {
 
+    companion object {
+        private const val PREFS_NAME = "blue_wifi_prefs"
+        private const val KEY_BOUND_MAC = "bound_host_mac"
+        private const val KEY_BOUND_NAME = "bound_host_name"
+        private const val KEY_AUTO_CONNECT = "auto_connect_on_start"
+    }
+
     private lateinit var binding: ActivityMainBinding
     private lateinit var hidManager: BluetoothHidManager
     private lateinit var wifiScanManager: WifiScanManager
@@ -57,7 +64,26 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         wifiScanManager = WifiScanManager(this)
 
         initViews()
+        loadPreferences()
         checkAndRequestPermissions()
+    }
+
+    private fun loadPreferences() {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val boundMac = sp.getString(KEY_BOUND_MAC, null)
+        val boundName = sp.getString(KEY_BOUND_NAME, null)
+        val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
+
+        binding.switchAutoConnect.isChecked = autoConnect
+        if (!boundMac.isNullOrEmpty()) {
+            binding.tvBoundHost.text = getString(R.string.title_bound_host, "${boundName ?: "未知设备"} ($boundMac)")
+        } else {
+            binding.tvBoundHost.text = getString(R.string.status_unbound_host)
+        }
+
+        binding.switchAutoConnect.setOnCheckedChangeListener { _, isChecked ->
+            sp.edit().putBoolean(KEY_AUTO_CONNECT, isChecked).apply()
+        }
     }
 
     private fun initViews() {
@@ -70,6 +96,16 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
         // 触摸板事件监听
         binding.touchPadView.listener = this
+
+        // 核心：一键回连目标热点手机
+        binding.btnReconnectHost.setOnClickListener {
+            connectToBoundHost()
+        }
+
+        // 绑定/选择已配对的热点手机
+        binding.btnBindHost.setOnClickListener {
+            showBindHostDialog()
+        }
 
         // 按钮交互
         binding.btnMakeDiscoverable.setOnClickListener {
@@ -119,6 +155,56 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         wifiScanManager.onScanFailedListener = { msg ->
             binding.pbWifiScanning.visibility = View.GONE
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    /**
+     * 弹出对话框选择已配对的蓝牙手机作为热点主机
+     */
+    private fun showBindHostDialog() {
+        val bondedDevices = hidManager.getBondedDevices().toList()
+        if (bondedDevices.isEmpty()) {
+            Toast.makeText(this, "系统未找到已配对的蓝牙设备，请先开启可发现模式并与SIM卡手机配对", Toast.LENGTH_LONG).show()
+            return
+        }
+
+        val deviceNames = bondedDevices.map { "${it.name ?: "未知设备"} (${it.address})" }.toTypedArray()
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("选择要绑定的SIM卡热点手机")
+            .setItems(deviceNames) { _, which ->
+                val selected = bondedDevices[which]
+                val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                sp.edit()
+                    .putString(KEY_BOUND_MAC, selected.address)
+                    .putString(KEY_BOUND_NAME, selected.name ?: "未知设备")
+                    .apply()
+
+                binding.tvBoundHost.text = getString(R.string.title_bound_host, "${selected.name} (${selected.address})")
+                Toast.makeText(this, "已绑定热点机: ${selected.name}，可随时点击一键重连", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 主动发起连接绑定的热点手机
+     */
+    private fun connectToBoundHost() {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val mac = sp.getString(KEY_BOUND_MAC, null)
+        val name = sp.getString(KEY_BOUND_NAME, "热点手机")
+
+        if (mac.isNullOrEmpty()) {
+            Toast.makeText(this, "尚未绑定热点机，请先点击【绑定/选择热点机】", Toast.LENGTH_LONG).show()
+            showBindHostDialog()
+            return
+        }
+
+        Toast.makeText(this, getString(R.string.msg_connecting_host, name), Toast.LENGTH_SHORT).show()
+        val started = hidManager.connect(mac)
+        if (!started) {
+            Toast.makeText(this, "蓝牙 HID 服务尚未就绪，请稍后重试", Toast.LENGTH_SHORT).show()
         }
     }
 
@@ -192,6 +278,16 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             binding.tvBtStatus.text = getString(R.string.bt_status_ready)
             binding.viewStatusDot.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_connecting)
+
+            // 检查是否开启了“启动时自动重连热点机”
+            val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
+            val boundMac = sp.getString(KEY_BOUND_MAC, null)
+            if (autoConnect && !boundMac.isNullOrEmpty()) {
+                binding.root.postDelayed({
+                    connectToBoundHost()
+                }, 600)
+            }
         } else {
             binding.tvBtStatus.text = getString(R.string.bt_status_uninitialized)
             binding.viewStatusDot.backgroundTintList =

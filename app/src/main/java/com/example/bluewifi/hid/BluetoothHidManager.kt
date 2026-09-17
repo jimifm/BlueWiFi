@@ -233,6 +233,36 @@ class BluetoothHidManager(private val context: Context) {
     }
 
     /**
+     * 获取系统已配对的蓝牙设备列表
+     */
+    fun getBondedDevices(): Set<BluetoothDevice> {
+        return bluetoothAdapter?.bondedDevices ?: emptySet()
+    }
+
+    /**
+     * 主动向已配对的目标 Host 手机 (SIM卡手机) 发起 HID 鼠标/键盘连接
+     */
+    fun connect(device: BluetoothDevice): Boolean {
+        val hid = hidDevice
+        if (hid == null) {
+            Log.w(TAG, "Cannot connect: BluetoothHidDevice service is not ready yet")
+            return false
+        }
+        Log.d(TAG, "Initiating HID connection to ${device.name} (${device.address})")
+        return hid.connect(device)
+    }
+
+    /**
+     * 根据 MAC 地址主动发起连接
+     */
+    fun connect(macAddress: String): Boolean {
+        val adapter = bluetoothAdapter ?: return false
+        if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) return false
+        val device = adapter.getRemoteDevice(macAddress)
+        return connect(device)
+    }
+
+    /**
      * 断开当前连接的目标设备
      */
     fun disconnect() {
