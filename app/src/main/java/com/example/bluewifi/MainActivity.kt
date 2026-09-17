@@ -378,15 +378,18 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                 binding.viewStatusDot.backgroundTintList =
                     ContextCompat.getColorStateList(this, R.color.status_connected)
 
-                // 核心功能点：连接成功后自动刷新终端 WLAN 列表
-                Snackbar.make(binding.root, R.string.auto_refresh_notice, Snackbar.LENGTH_LONG)
-                    .setAction("打开系统WLAN") {
-                        wifiScanManager.openWifiSettings()
+                // 核心功能点：蓝牙连接成功后延时 2 秒触发 WLAN 扫描刷新 (等待主机热点无线广播就绪)
+                Snackbar.make(binding.root, "已连接热点机！等待主机热点开启，2秒后自动刷新...", Snackbar.LENGTH_SHORT)
+                    .setAction("立即刷新") {
+                        performWifiScan()
                     }
                     .show()
 
-                // 触发刷新终端 WLAN 列表
-                performWifiScan()
+                binding.root.postDelayed({
+                    if (isDestroyed || isFinishing) return@postDelayed
+                    performWifiScan()
+                    Toast.makeText(this@MainActivity, "已自动为您刷新 WLAN 列表", Toast.LENGTH_SHORT).show()
+                }, 2000)
             }
 
             BluetoothProfile.STATE_CONNECTING -> {

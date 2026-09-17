@@ -27,8 +27,9 @@ sequenceDiagram
     Master->>Scene: 触发系统事件：指定蓝牙外设已连接
     Scene->>Master: 自动开启便携式 Wi-Fi 热点 (AP)
     Slave->>Slave: 监听到蓝牙 HID 连接成功 (STATE_CONNECTED)
+    Note over Slave: 延时 2 秒 (等待主机 AP 热点广播信号就绪)
     Slave->>Wifi: 自动触发 startScan() 扫描 WLAN
-    Wifi-->>Slave: 刷新周围 Wi-Fi 列表 (发现主机热点并自动接入)
+    Wifi-->>Slave: 刷新周围 Wi-Fi 列表 (精准捕获主机热点并自动接入)
     Note over Slave, Master: 整个过程无需触碰 SIM 卡手机，即刻畅快上网！
 ```
 
@@ -40,10 +41,10 @@ sequenceDiagram
    - 突破 Android 手机间普通蓝牙无法自动重连的限制，通过 `BluetoothHidDevice.connect(device)` 对已绑定的 SIM 卡主机发起主动回连。
    - 提供**【绑定/选择热点机】**功能，从已配对设备中一键选择并永久记忆。
    - 支持**【启动 App 时自动重连热点机】**开关，真正做到“打开 App 即可触发热点并刷新网络”。
-2. **连接成功自动刷新 WLAN 列表**
-   - 监听 HID Profile 连接回调，连接成功瞬间自动调用 `WifiManager.startScan()` 刷新周围热点。
+2. **连接成功 2 秒精准联动刷新 WLAN 列表**
+   - 蓝牙连接成功建立后，界面给予动态倒计时反馈，并在 **2 秒后**准时触发 `WifiManager.startScan()` 扫描周围热点。完美规避了主力手机 AP 热点刚打开尚未发射信号的时钟空窗期，大幅提升一次性命中热点的成功率！
    - 列表实时呈现 Wi-Fi 名称、BSSID、信号百分比、2.4G/5G 频段与加密协议。
-   - 提供一键跳转系统原生 WLAN 设置面板。
+   - 界面直观调整：WLAN 列表置顶优先展示，下方保留触控板供快捷控制。
 3. **真实鼠标与键盘功能测试面板**
    - 内置**触控板 (TouchPad)**：在备用机屏幕滑动手指，SIM 卡手机上会出现真实的鼠标指针并同步位移。
    - 支持单指轻击左键、双指/右下角轻击右键。
