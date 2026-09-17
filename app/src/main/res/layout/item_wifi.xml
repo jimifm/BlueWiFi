@@ -24,14 +24,35 @@
         android:layout_marginStart="14dp"
         android:orientation="vertical">
 
-        <TextView
-            android:id="@+id/tvSsid"
+        <LinearLayout
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="WiFi Name"
-            android:textColor="@color/text_primary"
-            android:textSize="15sp"
-            android:textStyle="bold" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvSsid"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="WiFi Name"
+                android:textColor="@color/text_primary"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/tvTargetBadge"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:background="#E8F5E9"
+                android:paddingHorizontal="6dp"
+                android:paddingVertical="1dp"
+                android:text="自动连接目标"
+                android:textColor="#2E7D32"
+                android:textSize="10sp"
+                android:textStyle="bold"
+                android:visibility="gone" />
+        </LinearLayout>
 
         <TextView
             android:id="@+id/tvDetails"

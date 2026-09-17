@@ -150,4 +150,58 @@ class WifiScanManager(private val context: Context) {
             Log.e(TAG, "Unable to open Wi-Fi settings", e)
         }
     }
+
+    /**
+     * 请求系统连接指定目标 Wi-Fi (兼容 Android 10+ 网络建议与 Android 9 配置连接)
+     */
+    fun connectToWifi(ssid: String, password: String? = null, onResult: ((Boolean, String) -> Unit)? = null) {
+        try {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.Q) {
+                // Android 10+ 官方建议网络连接机制 (系统会自动以最高优先级无缝漫游接入)
+                val builder = android.net.wifi.WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(false)
+
+                if (!password.isNullOrEmpty()) {
+                    builder.setWpa2Passphrase(password)
+                }
+
+                val suggestion = builder.build()
+                val status = wifiManager.addNetworkSuggestions(listOf(suggestion))
+                Log.d(TAG, "addNetworkSuggestions result status: $status for $ssid")
+
+                // 促使系统重新扫描并优先接入建议网络
+                wifiManager.reconnect()
+                onResult?.invoke(true, "已提交热点自动连接请求，等待系统接入")
+            } else {
+                // Android 9 (API 28) 传统 WifiConfiguration 方式
+                val wifiConfig = android.net.wifi.WifiConfiguration().apply {
+                    SSID = "\"$ssid\""
+                    if (!password.isNullOrEmpty()) {
+                        preSharedKey = "\"$password\""
+                    } else {
+                        allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+                    }
+                }
+                val netId = wifiManager.addNetwork(wifiConfig)
+                if (netId != -1) {
+                    wifiManager.disconnect()
+                    wifiManager.enableNetwork(netId, true)
+                    wifiManager.reconnect()
+                    onResult?.invoke(true, "已下发网络配置并请求接入")
+                } else {
+                    wifiManager.reconnect()
+                    onResult?.invoke(true, "已请求重新关联网络")
+                }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error connecting to wifi $ssid", e)
+            try {
+                wifiManager.reconnect()
+            } catch (ex: Exception) {
+                // ignore
+            }
+            onResult?.invoke(false, "连接请求异常: ${e.message}")
+        }
+    }
 }

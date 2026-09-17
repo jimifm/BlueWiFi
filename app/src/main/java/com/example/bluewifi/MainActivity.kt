@@ -35,6 +35,8 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         private const val KEY_BOUND_MAC = "bound_host_mac"
         private const val KEY_BOUND_NAME = "bound_host_name"
         private const val KEY_AUTO_CONNECT = "auto_connect_on_start"
+        private const val KEY_TARGET_WLAN_SSID = "target_wlan_ssid"
+        private const val KEY_TARGET_WLAN_PASSWORD = "target_wlan_password"
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -110,6 +112,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         val boundMac = sp.getString(KEY_BOUND_MAC, null)
         val boundName = sp.getString(KEY_BOUND_NAME, null)
         val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
+        val targetSsid = sp.getString(KEY_TARGET_WLAN_SSID, null)
 
         binding.switchAutoConnect.isChecked = autoConnect
         if (!boundMac.isNullOrEmpty()) {
@@ -118,18 +121,33 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             binding.tvBoundHost.text = getString(R.string.status_unbound_host)
         }
 
+        if (!targetSsid.isNullOrEmpty()) {
+            binding.tvTargetWlan.text = "目标自动连热点: $targetSsid"
+            binding.btnClearTargetWlan.visibility = View.VISIBLE
+            wifiAdapter.targetSsid = targetSsid
+        } else {
+            binding.tvTargetWlan.text = "目标自动连热点: 未设置 (点击下方列表绑定)"
+            binding.btnClearTargetWlan.visibility = View.GONE
+            wifiAdapter.targetSsid = null
+        }
+
         binding.switchAutoConnect.setOnCheckedChangeListener { _, isChecked ->
             sp.edit().putBoolean(KEY_AUTO_CONNECT, isChecked).apply()
         }
     }
 
     private fun initViews() {
-        // 初始化 WLAN 列表
+        // 初始化 WLAN 列表 (点击列表项可设为自动连接的目标热点)
         wifiAdapter = WifiListAdapter { wifiItem ->
-            Toast.makeText(this, "选中 WiFi: ${wifiItem.ssid}", Toast.LENGTH_SHORT).show()
+            showSetTargetWlanDialog(wifiItem)
         }
         binding.rvWifiList.layoutManager = LinearLayoutManager(this)
         binding.rvWifiList.adapter = wifiAdapter
+
+        // 清除目标热点按钮
+        binding.btnClearTargetWlan.setOnClickListener {
+            clearTargetWlan()
+        }
 
         // 触摸板事件监听
         binding.touchPadView.listener = this
@@ -195,12 +213,90 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             wifiAdapter.submitList(list)
             binding.tvWifiEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
             updateCurrentConnectedWifi()
+
+            // 核心自动化联动：如果设置了目标热点，且在扫描列表中发现了它，自动发起网络连接！
+            val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            val targetSsid = sp.getString(KEY_TARGET_WLAN_SSID, null)
+            val targetPassword = sp.getString(KEY_TARGET_WLAN_PASSWORD, null)
+
+            if (!targetSsid.isNullOrEmpty()) {
+                val currentSsid = wifiScanManager.getCurrentConnectedSsid()
+                if (currentSsid.equals(targetSsid, ignoreCase = true)) {
+                    android.util.Log.d("MainActivity", "Already connected to target WLAN: $targetSsid")
+                } else {
+                    val hasTargetInScan = list.any { it.ssid.equals(targetSsid, ignoreCase = true) }
+                    if (hasTargetInScan) {
+                        Snackbar.make(binding.root, "已扫描到目标热点【$targetSsid】，正在自动接入...", Snackbar.LENGTH_LONG).show()
+                        wifiScanManager.connectToWifi(targetSsid, targetPassword) { success, msg ->
+                            Toast.makeText(this@MainActivity, msg, Toast.LENGTH_SHORT).show()
+                            binding.root.postDelayed({ updateCurrentConnectedWifi() }, 2500)
+                        }
+                    }
+                }
+            }
         }
 
         wifiScanManager.onScanFailedListener = { msg ->
             binding.pbWifiScanning.visibility = View.GONE
             Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    /**
+     * 弹出对话框将选中的 Wi-Fi 设为目标自动连接热点
+     */
+    private fun showSetTargetWlanDialog(wifiItem: WifiItem) {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val currentTarget = sp.getString(KEY_TARGET_WLAN_SSID, null)
+        val currentPwd = sp.getString(KEY_TARGET_WLAN_PASSWORD, "")
+
+        val inputEditText = android.widget.EditText(this).apply {
+            hint = "热点密码 (若系统已保存过此密码可留空)"
+            inputType = android.text.InputType.TYPE_CLASS_TEXT or android.text.InputType.TYPE_TEXT_VARIATION_PASSWORD
+            if (currentTarget == wifiItem.ssid && !currentPwd.isNullOrEmpty()) {
+                setText(currentPwd)
+            }
+        }
+
+        val container = android.widget.FrameLayout(this).apply {
+            setPadding(60, 20, 60, 10)
+            addView(inputEditText)
+        }
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("设为自动连接目标热点")
+            .setMessage("确定将【${wifiItem.ssid}】设为自动连接的目标热点吗？\n蓝牙连接成功后将自动接入此 Wi-Fi。")
+            .setView(container)
+            .setPositiveButton("保存并设为目标") { _, _ ->
+                val pwd = inputEditText.text?.toString()?.trim()
+                sp.edit()
+                    .putString(KEY_TARGET_WLAN_SSID, wifiItem.ssid)
+                    .putString(KEY_TARGET_WLAN_PASSWORD, pwd)
+                    .apply()
+
+                binding.tvTargetWlan.text = "目标自动连热点: ${wifiItem.ssid}"
+                binding.btnClearTargetWlan.visibility = View.VISIBLE
+                wifiAdapter.targetSsid = wifiItem.ssid
+                Toast.makeText(this, "已设置目标热点: ${wifiItem.ssid}", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    /**
+     * 清除绑定的目标热点
+     */
+    private fun clearTargetWlan() {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        sp.edit()
+            .remove(KEY_TARGET_WLAN_SSID)
+            .remove(KEY_TARGET_WLAN_PASSWORD)
+            .apply()
+
+        binding.tvTargetWlan.text = "目标自动连热点: 未设置 (点击下方列表绑定)"
+        binding.btnClearTargetWlan.visibility = View.GONE
+        wifiAdapter.targetSsid = null
+        Toast.makeText(this, "已清除目标热点设置", Toast.LENGTH_SHORT).show()
     }
 
     /**

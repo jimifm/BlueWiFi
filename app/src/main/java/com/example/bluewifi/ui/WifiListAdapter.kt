@@ -5,12 +5,19 @@ import android.view.ViewGroup
 import androidx.recyclerview.widget.DiffUtil
 import androidx.recyclerview.widget.ListAdapter
 import androidx.recyclerview.widget.RecyclerView
+import android.view.View
 import com.example.bluewifi.databinding.ItemWifiBinding
 import com.example.bluewifi.wifi.WifiItem
 
 class WifiListAdapter(
     private val onItemClick: ((WifiItem) -> Unit)? = null
 ) : ListAdapter<WifiItem, WifiListAdapter.WifiViewHolder>(DiffCallback) {
+
+    var targetSsid: String? = null
+        set(value) {
+            field = value
+            notifyDataSetChanged()
+        }
 
     class WifiViewHolder(val binding: ItemWifiBinding) : RecyclerView.ViewHolder(binding.root)
 
@@ -22,6 +29,9 @@ class WifiListAdapter(
     override fun onBindViewHolder(holder: WifiViewHolder, position: Int) {
         val item = getItem(position)
         holder.binding.tvSsid.text = item.ssid
+
+        val isTarget = !targetSsid.isNullOrEmpty() && item.ssid.equals(targetSsid, ignoreCase = true)
+        holder.binding.tvTargetBadge.visibility = if (isTarget) View.VISIBLE else View.GONE
 
         val freqStr = if (item.is5Ghz) "5G" else "2.4G"
         val capSummary = when {
