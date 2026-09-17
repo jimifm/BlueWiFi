@@ -125,7 +125,7 @@ class BluetoothHidManager(private val context: Context) {
             "BlueWiFi Combo Controller",
             "Android Bluetooth Mouse and Keyboard Combo",
             "BlueWiFi Inc.",
-            BluetoothHidDevice.SUBCLASS2_COMBO,
+            BluetoothHidDevice.SUBCLASS1_COMBO,
             HidConsts.COMBO_REPORT_DESCRIPTOR
         )
 
