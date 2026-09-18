@@ -53,7 +53,12 @@ sequenceDiagram
    - 内置**触控板 (TouchPad)**：在备用机屏幕滑动手指，SIM 卡手机上会出现真实的鼠标指针并同步位移。
    - 支持单指轻击左键、双指/右下角轻击右键。
    - 常用功能键：回车 (Enter)、返回 (Esc)、主页 (Home)、音量加减等，直观验证外设控制。
-4. **CI/CD 自动化持续集成**
+5. **后台守护前台服务 & 空闲心跳保活 (防断连自愈)**
+   - 适配 Android 14 (targetSdk 34) `connectedDevice` 规范的 `HotspotWakeService` 前台常驻服务与 WakeLock；
+   - **HID 报文心跳保活**：连接建立后每 25 秒向主机发送静默心跳报文 (`dx=0, dy=0`)，彻底解决主力机因外设长时间静默而主动断开 L2CAP 链路的节能痛点；
+   - **意外断开自动重连**：当受到瞬时干扰或手机短时失联时，后台服务在 3.5 秒内自动发起重新回连；
+   - **电池优化白名单引导**：界面直接提供一键申请“忽略电池优化”跳转，杜绝国产系统锁屏冻结应用。
+6. **CI/CD 自动化持续集成**
    - 集成 GitHub Actions 工作流（[main.yml](.github/workflows/main.yml)），每次 push 或 PR 自动通过 JDK 17 与 Gradle 8.5 编译生成 Debug APK。
    - 支持 打 Tag（v*）自动触发 Release 发布（[release.yml](.github/workflows/release.yml)）。
 
@@ -70,13 +75,15 @@ blueWiFi/
 ├── app/
 │   ├── build.gradle.kts                  # minSdk 28 (Android 9.0+), targetSdk 34
 │   └── src/main/
-│       ├── AndroidManifest.xml           # 适配 Android 9 ~ 14 完整蓝牙与 WLAN 权限
+│       ├── AndroidManifest.xml           # 适配 Android 9 ~ 14 前台服务、蓝牙与 WLAN 权限
 │       ├── java/com/example/bluewifi/
-│       │   ├── MainActivity.kt           # 主控中枢：热点机绑定、自动回连与 WLAN 联动
+│       │   ├── MainActivity.kt           # 主控中枢：热点机绑定、状态同步与 WLAN 联动
+│       │   ├── service/
+│       │   │   └── HotspotWakeService.kt # 前台守护服务：通知栏常驻、心跳保活、异常自动重连
 │       │   ├── hid/
 │       │   │   ├── HidConsts.kt          # Combo HID 描述符及标准键码
 │       │   │   ├── HidDeviceListener.kt
-│       │   │   └── BluetoothHidManager.kt# BluetoothHidDevice 生命周期与报文驱动
+│       │   │   └── BluetoothHidManager.kt# 单例管理、BluetoothHidDevice 生命周期与报文驱动
 │       │   ├── wifi/
 │       │   │   ├── WifiItem.kt           # Wi-Fi 实体模型
 │       │   │   └── WifiScanManager.kt    # WLAN 扫描、广播监听与系统设置跳转

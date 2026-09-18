@@ -12,14 +12,24 @@ import android.content.Context
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
+import java.util.concurrent.CopyOnWriteArraySet
 import java.util.concurrent.Executors
 
 @SuppressLint("MissingPermission")
-class BluetoothHidManager(private val context: Context) {
+class BluetoothHidManager private constructor(private val context: Context) {
 
     companion object {
         private const val TAG = "BluetoothHidManager"
         private const val PROXY_TIMEOUT_MS = 6000L
+
+        @Volatile
+        private var instance: BluetoothHidManager? = null
+
+        fun getInstance(context: Context): BluetoothHidManager {
+            return instance ?: synchronized(this) {
+                instance ?: BluetoothHidManager(context.applicationContext).also { instance = it }
+            }
+        }
     }
 
     private val bluetoothManager: BluetoothManager? =
@@ -40,7 +50,33 @@ class BluetoothHidManager(private val context: Context) {
     var connectedDevice: BluetoothDevice? = null
         private set
 
-    var listener: HidDeviceListener? = null
+    var lastDeviceState: Int = BluetoothProfile.STATE_DISCONNECTED
+        private set
+
+    var lastStatusMessage: String = ""
+        private set
+
+    var isUserDisconnecting: Boolean = false
+        private set
+
+    private val listeners = CopyOnWriteArraySet<HidDeviceListener>()
+
+    fun addListener(l: HidDeviceListener) {
+        listeners.add(l)
+    }
+
+    fun removeListener(l: HidDeviceListener) {
+        listeners.remove(l)
+    }
+
+    var listener: HidDeviceListener?
+        get() = listeners.firstOrNull()
+        set(value) {
+            listeners.clear()
+            if (value != null) {
+                listeners.add(value)
+            }
+        }
 
     private val mainHandler = Handler(Looper.getMainLooper())
     private val executor = Executors.newSingleThreadExecutor()
@@ -50,7 +86,8 @@ class BluetoothHidManager(private val context: Context) {
         if (hidDevice == null && isInitializing) {
             isInitializing = false
             Log.w(TAG, "getProfileProxy timeout. HID Device profile not responding.")
-            listener?.onError("获取蓝牙外设服务超时！当前系统可能未开启 Bluetooth HID Device 支持，请尝试重启蓝牙或检查系统设置")
+            val errMsg = "获取蓝牙外设服务超时！当前系统可能未开启 Bluetooth HID Device 支持，请尝试重启蓝牙或检查系统设置"
+            listeners.forEach { it.onError(errMsg) }
         }
     }
 
@@ -62,8 +99,10 @@ class BluetoothHidManager(private val context: Context) {
             if (profile == BluetoothProfile.HID_DEVICE) {
                 Log.d(TAG, "Bluetooth HID Device profile connected successfully")
                 hidDevice = proxy as? BluetoothHidDevice
+                val msg = "已获取蓝牙外设代理，正在向系统注册键鼠描述符..."
+                lastStatusMessage = msg
                 mainHandler.post {
-                    listener?.onStatusMessage("已获取蓝牙外设代理，正在向系统注册键鼠描述符...")
+                    listeners.forEach { it.onStatusMessage(msg) }
                 }
                 registerHidApp()
             }
@@ -75,8 +114,10 @@ class BluetoothHidManager(private val context: Context) {
                 hidDevice = null
                 isAppRegistered = false
                 mainHandler.post {
-                    listener?.onAppRegistered(false)
-                    listener?.onError("蓝牙外设服务已与系统断开")
+                    listeners.forEach {
+                        it.onAppRegistered(false)
+                        it.onError("蓝牙外设服务已与系统断开")
+                    }
                 }
             }
         }
@@ -87,26 +128,30 @@ class BluetoothHidManager(private val context: Context) {
             Log.d(TAG, "onAppStatusChanged: registered = $registered, device = ${pluggedDevice?.address}")
             isAppRegistered = registered
             mainHandler.post {
-                listener?.onAppRegistered(registered)
+                listeners.forEach { it.onAppRegistered(registered) }
+                val msg = if (registered) "蓝牙外设服务注册成功，随时可连接" else "蓝牙外设服务已注销"
+                lastStatusMessage = msg
                 if (registered) {
-                    listener?.onStatusMessage("蓝牙外设服务注册成功，随时可连接")
+                    listeners.forEach { it.onStatusMessage(msg) }
                 } else {
-                    listener?.onError("蓝牙外设服务已注销")
+                    listeners.forEach { it.onError(msg) }
                 }
             }
         }
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             Log.d(TAG, "onConnectionStateChanged: device = ${device.address}, state = $state")
+            lastDeviceState = state
             if (state == BluetoothProfile.STATE_CONNECTED) {
                 connectedDevice = device
+                isUserDisconnecting = false
             } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
                 if (connectedDevice?.address == device.address) {
                     connectedDevice = null
                 }
             }
             mainHandler.post {
-                listener?.onDeviceStateChanged(device, state)
+                listeners.forEach { it.onDeviceStateChanged(device, state) }
             }
         }
 
@@ -361,6 +406,23 @@ class BluetoothHidManager(private val context: Context) {
     }
 
     /**
+     * 发送心跳空报文，防止主力机蓝牙节能策略误切断 L2CAP 链路
+     */
+    fun sendKeepAliveReport() {
+        val device = connectedDevice ?: return
+        val hid = hidDevice ?: return
+        val report = byteArrayOf(0, 0, 0, 0)
+        executor.execute {
+            try {
+                hid.sendReport(device, 0, report)
+                Log.d(TAG, "Keep-alive HID null report sent to ${device.address}")
+            } catch (e: Exception) {
+                Log.w(TAG, "Failed to send keep-alive report: ${e.message}")
+            }
+        }
+    }
+
+    /**
      * 获取系统已配对的蓝牙设备列表
      */
     fun getBondedDevices(): Set<BluetoothDevice> {
@@ -371,6 +433,7 @@ class BluetoothHidManager(private val context: Context) {
      * 主动向已配对的目标 Host 手机 (SIM卡手机) 发起 HID 连接
      */
     fun connect(device: BluetoothDevice): Boolean {
+        isUserDisconnecting = false
         val hid = hidDevice
         if (hid == null) {
             Log.w(TAG, "Cannot connect: hidDevice proxy is null")
@@ -393,6 +456,7 @@ class BluetoothHidManager(private val context: Context) {
      * 根据 MAC 地址主动发起连接
      */
     fun connect(macAddress: String): Boolean {
+        isUserDisconnecting = false
         val adapter = bluetoothAdapter ?: return false
         if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) return false
         val device = try {
@@ -407,6 +471,7 @@ class BluetoothHidManager(private val context: Context) {
      * 断开当前连接的目标设备
      */
     fun disconnect() {
+        isUserDisconnecting = true
         val device = connectedDevice ?: return
         try {
             hidDevice?.disconnect(device)
@@ -419,6 +484,7 @@ class BluetoothHidManager(private val context: Context) {
      * 释放资源
      */
     fun release() {
+        isUserDisconnecting = true
         mainHandler.removeCallbacks(timeoutRunnable)
         isInitializing = false
         try {

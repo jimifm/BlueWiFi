@@ -18,10 +18,12 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.content.ContextCompat
 import androidx.recyclerview.widget.LinearLayoutManager
+import android.os.PowerManager
 import com.example.bluewifi.databinding.ActivityMainBinding
 import com.example.bluewifi.hid.BluetoothHidManager
 import com.example.bluewifi.hid.HidConsts
 import com.example.bluewifi.hid.HidDeviceListener
+import com.example.bluewifi.service.HotspotWakeService
 import com.example.bluewifi.ui.TouchPadView
 import com.example.bluewifi.ui.WifiListAdapter
 import com.example.bluewifi.wifi.WifiScanManager
@@ -53,6 +55,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                 if (state == BluetoothAdapter.STATE_ON) {
                     binding.tvBtStatus.text = "检测到蓝牙已开启，正在请求外设服务..."
                     binding.btnRetryBt.visibility = View.GONE
+                    HotspotWakeService.startService(this@MainActivity)
                     hidManager.initialize()
                 } else if (state == BluetoothAdapter.STATE_OFF) {
                     binding.tvBtStatus.text = "系统蓝牙已关闭，请开启蓝牙"
@@ -93,8 +96,8 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        hidManager = BluetoothHidManager(this)
-        hidManager.listener = this
+        hidManager = BluetoothHidManager.getInstance(applicationContext)
+        hidManager.addListener(this)
 
         wifiScanManager = WifiScanManager(this)
 
@@ -104,7 +107,35 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
         initViews()
         loadPreferences()
+        syncHidState()
         checkAndRequestPermissions()
+    }
+
+    override fun onResume() {
+        super.onResume()
+        syncHidState()
+        updateCurrentConnectedWifi()
+        checkBatteryOptimizations(forcePrompt = false)
+    }
+
+    /**
+     * 同步当前全局 BluetoothHidManager 与服务连接状态到 UI
+     */
+    private fun syncHidState() {
+        val dev = hidManager.connectedDevice
+        if (dev != null && hidManager.lastDeviceState == BluetoothProfile.STATE_CONNECTED) {
+            val deviceName = dev.name ?: "未知设备"
+            binding.tvBtStatus.text = getString(R.string.bt_status_connected, deviceName)
+            binding.tvConnectedDevice.text = "设备地址: ${dev.address}"
+            binding.btnRetryBt.visibility = View.GONE
+            binding.viewStatusDot.backgroundTintList =
+                ContextCompat.getColorStateList(this, R.color.status_connected)
+        } else if (hidManager.isReady) {
+            binding.btnRetryBt.visibility = View.GONE
+            if (hidManager.lastStatusMessage.isNotEmpty()) {
+                binding.tvBtStatus.text = hidManager.lastStatusMessage
+            }
+        }
     }
 
     private fun loadPreferences() {
@@ -167,6 +198,11 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         // 绑定/选择已配对的热点手机
         binding.btnBindHost.setOnClickListener {
             showBindHostDialog()
+        }
+
+        // 电池优化白名单设置按钮
+        binding.btnBatteryOptimization.setOnClickListener {
+            checkBatteryOptimizations(forcePrompt = true)
         }
 
         // 按钮交互
@@ -356,10 +392,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         }
 
         Toast.makeText(this, getString(R.string.msg_connecting_host, name), Toast.LENGTH_SHORT).show()
-        val started = hidManager.connect(mac)
-        if (!started) {
-            Toast.makeText(this, "发起连接失败，请确认该设备已配对并在附近", Toast.LENGTH_SHORT).show()
-        }
+        HotspotWakeService.connect(this, mac)
     }
 
     private fun checkAndRequestPermissions() {
@@ -379,6 +412,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            permissions.add(Manifest.permission.POST_NOTIFICATIONS)
         }
 
         val ungranted = permissions.filter {
@@ -403,9 +437,56 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             return
         }
 
+        // 启动后台前台保活服务，确保切后台和锁屏不被系统杀掉或断开蓝牙
+        HotspotWakeService.startService(this)
+
         hidManager.initialize()
         updateCurrentConnectedWifi()
         performWifiScan()
+        checkBatteryOptimizations()
+    }
+
+    /**
+     * 引导用户忽略电池优化，确保切到后台与锁屏后系统不杀进程、不断蓝牙
+     */
+    private fun checkBatteryOptimizations(forcePrompt: Boolean = false) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val powerManager = getSystemService(Context.POWER_SERVICE) as? PowerManager ?: return
+            val isIgnoring = powerManager.isIgnoringBatteryOptimizations(packageName)
+
+            if (isIgnoring) {
+                binding.tvBatteryTip.text = "🛡️ 电池白名单已配置 (后台稳定保活)"
+                binding.btnBatteryOptimization.text = "已配置"
+                binding.btnBatteryOptimization.alpha = 0.6f
+            } else {
+                binding.tvBatteryTip.text = "⚠️ 未忽略电池优化 (切后台可能受限)"
+                binding.btnBatteryOptimization.text = "去加白名单"
+                binding.btnBatteryOptimization.alpha = 1.0f
+
+                if (forcePrompt) {
+                    try {
+                        val intent = Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = android.net.Uri.parse("package:$packageName")
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            startActivity(Intent(android.provider.Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        } catch (e2: Exception) {
+                            Toast.makeText(this, "请在系统设置 -> 电池优化中，将本应用设为无限制后台耗电", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } else {
+                    Snackbar.make(
+                        binding.root,
+                        "为了保证切到后台与锁屏后蓝牙不掉线，建议将本 App 设为【无限制/忽略电池优化】",
+                        Snackbar.LENGTH_LONG
+                    ).setAction("去设置") {
+                        checkBatteryOptimizations(forcePrompt = true)
+                    }.show()
+                }
+            }
+        }
     }
 
     /**
@@ -536,6 +617,8 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             isBtReceiverRegistered = false
         }
         wifiScanManager.unregisterReceiver()
-        hidManager.release()
+        // 关键改动：MainActivity 销毁时只移除当前 UI 的监听器，切勿调用 release()，
+        // 蓝牙连接与外设注册由 HotspotWakeService 前台服务在后台持续守护
+        hidManager.removeListener(this)
     }
 }
