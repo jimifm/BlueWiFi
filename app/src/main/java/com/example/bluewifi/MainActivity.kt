@@ -26,6 +26,7 @@ import com.example.bluewifi.hid.HidDeviceListener
 import com.example.bluewifi.service.HotspotWakeService
 import com.example.bluewifi.ui.TouchPadView
 import com.example.bluewifi.ui.WifiListAdapter
+import com.example.bluewifi.wifi.WifiItem
 import com.example.bluewifi.wifi.WifiScanManager
 import com.google.android.material.snackbar.Snackbar
 
