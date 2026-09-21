@@ -31,6 +31,10 @@
     <string name="title_bound_host">目标热点手机: %1$s</string>
     <string name="status_unbound_host">未绑定热点手机 (请先配对并绑定)</string>
     <string name="switch_auto_connect">启动 App 时自动重连热点机</string>
+    <string name="switch_auto_reconnect_disconnect">意外断开时自动重连 (3.5秒自愈)</string>
+    <string name="wifi_scan_delay_setting">连接后自动刷新延时: %1$d 秒</string>
+    <string name="btn_set_scan_delay">设置延时</string>
+    <string name="dialog_title_scan_delay">设置连接后 WLAN 刷新延时</string>
     <string name="msg_connecting_host">正在作为鼠标主动连接：%1$s ...</string>
     <string name="msg_host_connected">连接成功！主机已作为热点被唤醒，正刷新WLAN</string>
 </resources>

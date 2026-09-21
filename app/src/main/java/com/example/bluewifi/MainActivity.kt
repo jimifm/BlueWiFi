@@ -38,8 +38,11 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         private const val KEY_BOUND_MAC = "bound_host_mac"
         private const val KEY_BOUND_NAME = "bound_host_name"
         private const val KEY_AUTO_CONNECT = "auto_connect_on_start"
+        private const val KEY_AUTO_RECONNECT_ON_DISCONNECT = "auto_reconnect_on_disconnect"
         private const val KEY_TARGET_WLAN_SSID = "target_wlan_ssid"
         private const val KEY_TARGET_WLAN_PASSWORD = "target_wlan_password"
+        private const val KEY_WLAN_SCAN_DELAY_SEC = "wlan_scan_delay_sec"
+        private const val DEFAULT_WLAN_SCAN_DELAY_SEC = 5
     }
 
     private lateinit var binding: ActivityMainBinding
@@ -47,6 +50,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     private lateinit var wifiScanManager: WifiScanManager
     private lateinit var wifiAdapter: WifiListAdapter
     private var isBtReceiverRegistered = false
+    private var pendingScanRunnable: Runnable? = null
 
     // 蓝牙状态广播接收器
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -144,9 +148,14 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         val boundMac = sp.getString(KEY_BOUND_MAC, null)
         val boundName = sp.getString(KEY_BOUND_NAME, null)
         val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
+        val autoReconnectDisconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+        val scanDelaySec = sp.getInt(KEY_WLAN_SCAN_DELAY_SEC, DEFAULT_WLAN_SCAN_DELAY_SEC)
         val targetSsid = sp.getString(KEY_TARGET_WLAN_SSID, null)
 
         binding.switchAutoConnect.isChecked = autoConnect
+        binding.switchAutoReconnectDisconnect.isChecked = autoReconnectDisconnect
+        updateScanDelayText(scanDelaySec)
+
         if (!boundMac.isNullOrEmpty()) {
             binding.tvBoundHost.text = getString(R.string.title_bound_host, "${boundName ?: "未知设备"} ($boundMac)")
         } else {
@@ -166,6 +175,10 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         binding.switchAutoConnect.setOnCheckedChangeListener { _, isChecked ->
             sp.edit().putBoolean(KEY_AUTO_CONNECT, isChecked).apply()
         }
+
+        binding.switchAutoReconnectDisconnect.setOnCheckedChangeListener { _, isChecked ->
+            sp.edit().putBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, isChecked).apply()
+        }
     }
 
     private fun initViews() {
@@ -179,6 +192,14 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         // 清除目标热点按钮
         binding.btnClearTargetWlan.setOnClickListener {
             clearTargetWlan()
+        }
+
+        // 延时刷新 WLAN 设置按钮
+        binding.btnSetScanDelay.setOnClickListener {
+            showScanDelayDialog()
+        }
+        binding.tvScanDelaySetting.setOnClickListener {
+            showScanDelayDialog()
         }
 
         // 触摸板事件监听
@@ -360,6 +381,34 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
                 binding.tvBoundHost.text = getString(R.string.title_bound_host, "${selected.name} (${selected.address})")
                 Toast.makeText(this, "已绑定热点机: ${selected.name}，可随时点击一键重连", Toast.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("取消", null)
+            .show()
+    }
+
+    private fun updateScanDelayText(delaySec: Int) {
+        binding.tvScanDelaySetting.text = getString(R.string.wifi_scan_delay_setting, delaySec)
+    }
+
+    /**
+     * 弹出对话框设置连接成功后 WLAN 自动刷新的延时秒数
+     */
+    private fun showScanDelayDialog() {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val currentDelay = sp.getInt(KEY_WLAN_SCAN_DELAY_SEC, DEFAULT_WLAN_SCAN_DELAY_SEC)
+        val options = arrayOf("1 秒 (极速就绪)", "2 秒", "3 秒", "5 秒 (默认/推荐)", "8 秒", "10 秒 (慢速广播设备)")
+        val values = intArrayOf(1, 2, 3, 5, 8, 10)
+        var selectedIndex = values.indexOf(currentDelay)
+        if (selectedIndex == -1) selectedIndex = 3
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle(R.string.dialog_title_scan_delay)
+            .setSingleChoiceItems(options, selectedIndex) { dialog, which ->
+                val newDelay = values[which]
+                sp.edit().putInt(KEY_WLAN_SCAN_DELAY_SEC, newDelay).apply()
+                updateScanDelayText(newDelay)
+                Toast.makeText(this, "已设置连接后 ${newDelay} 秒自动刷新 WLAN", Toast.LENGTH_SHORT).show()
+                dialog.dismiss()
             }
             .setNegativeButton("取消", null)
             .show()
@@ -556,18 +605,27 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                 binding.viewStatusDot.backgroundTintList =
                     ContextCompat.getColorStateList(this, R.color.status_connected)
 
-                // 核心功能点：蓝牙连接成功后延时 2 秒触发 WLAN 扫描刷新 (等待主机热点无线广播就绪)
-                Snackbar.make(binding.root, "已连接热点机！等待主机热点开启，2秒后自动刷新...", Snackbar.LENGTH_SHORT)
+                // 核心功能点：蓝牙连接成功后延时触发 WLAN 扫描刷新 (等待主机热点无线广播就绪)
+                val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                val delaySec = sp.getInt(KEY_WLAN_SCAN_DELAY_SEC, DEFAULT_WLAN_SCAN_DELAY_SEC)
+                val delayMs = delaySec * 1000L
+
+                pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
+
+                Snackbar.make(binding.root, "已连接热点机！等待主机热点开启，${delaySec}秒后自动刷新...", Snackbar.LENGTH_SHORT)
                     .setAction("立即刷新") {
+                        pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
                         performWifiScan()
                     }
                     .show()
 
-                binding.root.postDelayed({
-                    if (isDestroyed || isFinishing) return@postDelayed
+                val scanRunnable = Runnable {
+                    if (isDestroyed || isFinishing) return@Runnable
                     performWifiScan()
                     Toast.makeText(this@MainActivity, "已自动为您刷新 WLAN 列表", Toast.LENGTH_SHORT).show()
-                }, 2000)
+                }
+                pendingScanRunnable = scanRunnable
+                binding.root.postDelayed(scanRunnable, delayMs)
             }
 
             BluetoothProfile.STATE_CONNECTING -> {
@@ -577,6 +635,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             }
 
             BluetoothProfile.STATE_DISCONNECTED -> {
+                pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
                 binding.tvBtStatus.text = getString(R.string.bt_status_disconnected)
                 binding.tvConnectedDevice.text = "未连接目标手机"
                 binding.viewStatusDot.backgroundTintList =
@@ -609,6 +668,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
     override fun onDestroy() {
         super.onDestroy()
+        pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
         if (isBtReceiverRegistered) {
             try {
                 unregisterReceiver(bluetoothStateReceiver)

@@ -41,6 +41,7 @@ class HotspotWakeService : Service(), HidDeviceListener {
         private const val KEY_BOUND_MAC = "bound_host_mac"
         private const val KEY_BOUND_NAME = "bound_host_name"
         private const val KEY_AUTO_CONNECT = "auto_connect_on_start"
+        const val KEY_AUTO_RECONNECT_ON_DISCONNECT = "auto_reconnect_on_disconnect"
 
         private const val KEEP_ALIVE_INTERVAL_MS = 25000L // 25秒心跳一次
         private const val RECONNECT_DELAY_MS = 3500L       // 意外断开后3.5秒重试
@@ -108,6 +109,11 @@ class HotspotWakeService : Service(), HidDeviceListener {
     private val reconnectRunnable = Runnable {
         if (connectionState != BluetoothProfile.STATE_CONNECTED && !hidManager.isUserDisconnecting) {
             val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+            if (!autoReconnect) {
+                Log.i(TAG, "Auto-reconnect on disconnect is disabled by user setting")
+                return@Runnable
+            }
             val boundMac = currentHostMac ?: sp.getString(KEY_BOUND_MAC, null)
             if (!boundMac.isNullOrEmpty() && hidManager.isReady) {
                 Log.i(TAG, "Attempting auto-reconnect to bound host: $boundMac")
@@ -358,12 +364,17 @@ class HotspotWakeService : Service(), HidDeviceListener {
 
                 if (!hidManager.isUserDisconnecting) {
                     val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                    val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
                     val boundMac = sp.getString(KEY_BOUND_MAC, null)
-                    if (!boundMac.isNullOrEmpty()) {
+                    if (autoReconnect && !boundMac.isNullOrEmpty()) {
                         updateNotification("与热点机断开，${RECONNECT_DELAY_MS / 1000}秒后自动重试...")
                         mainHandler.removeCallbacks(reconnectRunnable)
                         mainHandler.postDelayed(reconnectRunnable, RECONNECT_DELAY_MS)
+                    } else if (!autoReconnect) {
+                        mainHandler.removeCallbacks(reconnectRunnable)
+                        updateNotification("与热点机断开 (已关闭断开自动重连)")
                     } else {
+                        mainHandler.removeCallbacks(reconnectRunnable)
                         updateNotification("蓝牙已断开")
                     }
                 } else {
