@@ -178,10 +178,17 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         binding.switchAutoReconnectDisconnect.setOnCheckedChangeListener { _, isChecked ->
             sp.edit().putBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, isChecked).apply()
             if (isChecked) {
-                // 用户重新开启自动重连：立即清除主动断开拦截标记
+                // 用户重新开启自动重连：立即清除主动断开拦截标记，并恢复外设就绪状态
                 hidManager.resetUserDisconnecting()
+                if (!hidManager.isAppRegistered) {
+                    hidManager.initialize()
+                }
                 Toast.makeText(this, "已开启断开自动重连与自愈恢复", Toast.LENGTH_SHORT).show()
             } else {
+                // 用户关闭自动重连：若当前未处于连接中，立即注销外设广播休眠，彻底阻止对端私自连入
+                if (hidManager.lastDeviceState != BluetoothProfile.STATE_CONNECTED) {
+                    hidManager.unregisterHidApp()
+                }
                 Toast.makeText(this, "已关闭自动重连，并阻止对端私自连入", Toast.LENGTH_SHORT).show()
             }
         }
@@ -515,7 +522,9 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     private fun disconnectFromHost() {
         Toast.makeText(this, getString(R.string.msg_host_disconnected), Toast.LENGTH_SHORT).show()
         HotspotWakeService.disconnect(this)
-        binding.tvBtStatus.text = "已主动断开蓝牙连接"
+        hidManager.unregisterHidApp()
+        updateControlButtons(BluetoothProfile.STATE_DISCONNECTED)
+        binding.tvBtStatus.text = "已主动断开蓝牙连接 (外设已休眠)"
         binding.tvConnectedDevice.text = "未连接目标手机"
         binding.viewStatusDot.backgroundTintList =
             ContextCompat.getColorStateList(this, R.color.status_disconnected)

@@ -75,6 +75,28 @@ class BluetoothHidManager private constructor(private val context: Context) {
         isUserDisconnecting = false
     }
 
+    private var pendingConnectMac: String? = null
+
+    /**
+     * 彻底注销 HID 外设广播（休眠模式），从底层关闭 L2CAP 端口，防止对端主机私自回连
+     */
+    fun unregisterHidApp() {
+        val hid = hidDevice ?: return
+        if (!isAppRegistered) return
+        try {
+            hid.unregisterApp()
+            isAppRegistered = false
+            Log.i(TAG, "HID app unregistered (sleep mode to block incoming host connections)")
+            mainHandler.post {
+                val msg = "蓝牙外设已休眠 (阻止对端自动回连)"
+                lastStatusMessage = msg
+                listeners.forEach { it.onStatusMessage(msg) }
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Error unregistering HID app", e)
+        }
+    }
+
     private val listeners = CopyOnWriteArraySet<HidDeviceListener>()
 
     fun addListener(l: HidDeviceListener) {
@@ -145,13 +167,20 @@ class BluetoothHidManager private constructor(private val context: Context) {
             isAppRegistered = registered
             mainHandler.post {
                 listeners.forEach { it.onAppRegistered(registered) }
-                val msg = if (registered) "蓝牙外设服务注册成功，随时可连接" else "蓝牙外设服务已注销"
+                val msg = if (registered) "蓝牙外设服务就绪，随时可连接" else "蓝牙外设已注销休眠"
                 lastStatusMessage = msg
                 if (registered) {
                     listeners.forEach { it.onStatusMessage(msg) }
-                } else {
-                    listeners.forEach { it.onError(msg) }
                 }
+            }
+
+            if (registered && !pendingConnectMac.isNullOrEmpty()) {
+                val targetMac = pendingConnectMac!!
+                pendingConnectMac = null
+                Log.i(TAG, "HID app registered, executing queued connect to $targetMac")
+                mainHandler.postDelayed({
+                    connect(targetMac)
+                }, 300)
             }
         }
 
@@ -162,7 +191,7 @@ class BluetoothHidManager private constructor(private val context: Context) {
                 val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
 
                 // 核心拦截：如果未开启断开自动重连，且本次连接非用户主动触发（即对端主机系统私自回连）
-                // 或者当前仍处于主动断开状态，立即强行断开并拒绝对端连入
+                // 或者当前仍处于主动断开状态，立即强行断开并注销外设广播，彻底阻断对端
                 if ((!autoReconnect && !isUserInitiatedConnect) || isUserDisconnecting) {
                     Log.w(
                         TAG,
@@ -175,8 +204,11 @@ class BluetoothHidManager private constructor(private val context: Context) {
                         Log.e(TAG, "Error rejecting incoming connection", e)
                     }
                     connectedDevice = null
+                    // 彻底注销外设广播，让对端协议栈接收 PSM Not Supported，彻底停止回连
+                    unregisterHidApp()
+
                     val msg = if (isUserDisconnecting) {
-                        "已拦截对端主机的回连 (当前处于主动断开状态)"
+                        "已拦截对端主机的回连 (外设已休眠)"
                     } else {
                         "已拦截对端主机的自动回连 (已关闭断开自动重连)"
                     }
@@ -199,6 +231,13 @@ class BluetoothHidManager private constructor(private val context: Context) {
                     connectedDevice = null
                 }
                 isUserInitiatedConnect = false
+
+                // 核心闭环：如果未开启断开自动重连，断开后直接注销外设广播，彻底阻断对端主机主动寻呼连入
+                val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+                if (!autoReconnect || isUserDisconnecting) {
+                    unregisterHidApp()
+                }
             }
             lastDeviceState = state
             mainHandler.post {
@@ -487,17 +526,21 @@ class BluetoothHidManager private constructor(private val context: Context) {
      */
     fun connect(device: BluetoothDevice): Boolean {
         isUserDisconnecting = false
-        val hid = hidDevice
-        if (hid == null) {
-            Log.w(TAG, "Cannot connect: hidDevice proxy is null")
-            isUserInitiatedConnect = false
-            return false
+        if (hidDevice == null) {
+            Log.i(TAG, "hidDevice is null, initializing proxy and queueing connect to ${device.address}")
+            pendingConnectMac = device.address
+            isUserInitiatedConnect = true
+            initialize()
+            return true
         }
         if (!isAppRegistered) {
-            Log.w(TAG, "Cannot connect: hid application is not registered yet")
-            isUserInitiatedConnect = false
-            return false
+            Log.i(TAG, "HID app not registered, registering and queueing connect to ${device.address}")
+            pendingConnectMac = device.address
+            isUserInitiatedConnect = true
+            registerHidApp()
+            return true
         }
+        val hid = hidDevice!!
         Log.d(TAG, "Initiating HID connection to ${device.name} (${device.address})")
         val success = try {
             hid.connect(device)
@@ -516,6 +559,23 @@ class BluetoothHidManager private constructor(private val context: Context) {
         isUserDisconnecting = false
         val adapter = bluetoothAdapter ?: return false
         if (!BluetoothAdapter.checkBluetoothAddress(macAddress)) return false
+
+        if (hidDevice == null) {
+            Log.i(TAG, "hidDevice is null, initializing proxy and queueing connect to $macAddress")
+            pendingConnectMac = macAddress
+            isUserInitiatedConnect = true
+            initialize()
+            return true
+        }
+
+        if (!isAppRegistered) {
+            Log.i(TAG, "HID app not registered, registering and queueing connect to $macAddress")
+            pendingConnectMac = macAddress
+            isUserInitiatedConnect = true
+            registerHidApp()
+            return true
+        }
+
         val device = try {
             adapter.getRemoteDevice(macAddress)
         } catch (e: Exception) {
@@ -530,12 +590,16 @@ class BluetoothHidManager private constructor(private val context: Context) {
     fun disconnect() {
         isUserDisconnecting = true
         isUserInitiatedConnect = false
-        val device = connectedDevice ?: return
-        try {
-            hidDevice?.disconnect(device)
-        } catch (e: Exception) {
-            Log.e(TAG, "Error disconnecting", e)
+        pendingConnectMac = null
+        val device = connectedDevice
+        if (device != null) {
+            try {
+                hidDevice?.disconnect(device)
+            } catch (e: Exception) {
+                Log.e(TAG, "Error disconnecting", e)
+            }
         }
+        connectedDevice = null
     }
 
     /**
