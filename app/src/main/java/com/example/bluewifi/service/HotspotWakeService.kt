@@ -150,12 +150,13 @@ class HotspotWakeService : Service(), HidDeviceListener {
             ACTION_START -> {
                 val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
+                val isExplicitDisconnect = sp.getBoolean(BluetoothHidManager.KEY_USER_EXPLICIT_DISCONNECT, false)
                 val boundMac = sp.getString(KEY_BOUND_MAC, null)
                 val boundName = sp.getString(KEY_BOUND_NAME, "热点手机")
                 currentHostMac = boundMac
                 currentHostName = boundName
 
-                if (autoConnect && !boundMac.isNullOrEmpty() && hidManager.isReady) {
+                if (autoConnect && !isExplicitDisconnect && !boundMac.isNullOrEmpty()) {
                     hidManager.connect(boundMac)
                 }
             }
@@ -320,12 +321,15 @@ class HotspotWakeService : Service(), HidDeviceListener {
     // === HidDeviceListener 回调 ===
 
     override fun onAppRegistered(registered: Boolean) {
+        val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val isExplicitDisconnect = sp.getBoolean(BluetoothHidManager.KEY_USER_EXPLICIT_DISCONNECT, false)
+        val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+
         if (registered) {
-            val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
             val boundMac = sp.getString(KEY_BOUND_MAC, null)
             val boundName = sp.getString(KEY_BOUND_NAME, "热点手机")
-            if (autoConnect && !boundMac.isNullOrEmpty() && connectionState != BluetoothProfile.STATE_CONNECTED) {
+            if (autoConnect && !isExplicitDisconnect && !boundMac.isNullOrEmpty() && connectionState != BluetoothProfile.STATE_CONNECTED) {
                 updateNotification("就绪，正在连接 $boundName...", isConnecting = true)
                 mainHandler.postDelayed({
                     hidManager.connect(boundMac)
@@ -334,7 +338,13 @@ class HotspotWakeService : Service(), HidDeviceListener {
                 updateNotification("蓝牙外设服务就绪，随时可回连")
             }
         } else {
-            updateNotification("蓝牙外设服务已注销")
+            if (isExplicitDisconnect || hidManager.isUserDisconnecting) {
+                updateNotification("蓝牙已主动断开 (外设已休眠)")
+            } else if (!autoReconnect) {
+                updateNotification("蓝牙外设待机中 (已关闭自动重连)")
+            } else {
+                updateNotification("蓝牙外设服务已注销")
+            }
         }
     }
 

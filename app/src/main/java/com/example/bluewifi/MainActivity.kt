@@ -58,7 +58,17 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             if (intent?.action == BluetoothAdapter.ACTION_STATE_CHANGED) {
                 val state = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR)
                 if (state == BluetoothAdapter.STATE_ON) {
-                    binding.tvBtStatus.text = "检测到蓝牙已开启，正在请求外设服务..."
+                    val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+                    val isExplicitDisconnect = sp.getBoolean(BluetoothHidManager.KEY_USER_EXPLICIT_DISCONNECT, false)
+                    val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+
+                    if (isExplicitDisconnect) {
+                        binding.tvBtStatus.text = "蓝牙外设已休眠 (点击【一键连接】唤醒)"
+                    } else if (!autoReconnect) {
+                        binding.tvBtStatus.text = "蓝牙外设待机中 (已关闭断开自动重连)"
+                    } else {
+                        binding.tvBtStatus.text = "检测到蓝牙已开启，正在请求外设服务..."
+                    }
                     binding.btnRetryBt.visibility = View.GONE
                     HotspotWakeService.startService(this@MainActivity)
                     hidManager.initialize()
@@ -128,6 +138,10 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
      */
     private fun syncHidState() {
         val dev = hidManager.connectedDevice
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val isExplicitDisconnect = sp.getBoolean(BluetoothHidManager.KEY_USER_EXPLICIT_DISCONNECT, false)
+        val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+
         if (dev != null && hidManager.lastDeviceState == BluetoothProfile.STATE_CONNECTED) {
             val deviceName = dev.name ?: "未知设备"
             binding.tvBtStatus.text = getString(R.string.bt_status_connected, deviceName)
@@ -136,6 +150,18 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             binding.viewStatusDot.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_connected)
             updateControlButtons(BluetoothProfile.STATE_CONNECTED)
+        } else if (isExplicitDisconnect) {
+            binding.tvBtStatus.text = "蓝牙外设已休眠 (点击【一键连接】唤醒)"
+            binding.btnRetryBt.visibility = View.GONE
+            binding.viewStatusDot.backgroundTintList =
+                ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            updateControlButtons(BluetoothProfile.STATE_DISCONNECTED)
+        } else if (!autoReconnect) {
+            binding.tvBtStatus.text = "蓝牙外设待机中 (已关闭断开自动重连)"
+            binding.btnRetryBt.visibility = View.GONE
+            binding.viewStatusDot.backgroundTintList =
+                ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            updateControlButtons(BluetoothProfile.STATE_DISCONNECTED)
         } else if (hidManager.isReady) {
             binding.btnRetryBt.visibility = View.GONE
             if (hidManager.lastStatusMessage.isNotEmpty()) {
@@ -181,7 +207,11 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                 // 用户重新开启自动重连：立即清除主动断开拦截标记，并恢复外设就绪状态
                 hidManager.resetUserDisconnecting()
                 if (!hidManager.isAppRegistered) {
-                    hidManager.initialize()
+                    if (hidManager.hidDevice != null) {
+                        hidManager.registerHidApp()
+                    } else {
+                        hidManager.initialize()
+                    }
                 }
                 Toast.makeText(this, "已开启断开自动重连与自愈恢复", Toast.LENGTH_SHORT).show()
             } else {
@@ -505,11 +535,9 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             return
         }
 
-        if (!hidManager.isReady) {
-            Toast.makeText(this, "蓝牙外设服务正在初始化，请稍等片刻或点击【重新初始化】", Toast.LENGTH_SHORT).show()
-            hidManager.initialize()
-            return
-        }
+        // 清除主动断开标记并标记为用户主动连接
+        hidManager.resetUserDisconnecting()
+        hidManager.markUserInitiatedConnect(true)
 
         updateControlButtons(BluetoothProfile.STATE_CONNECTING)
         Toast.makeText(this, getString(R.string.msg_connecting_host, name), Toast.LENGTH_SHORT).show()
@@ -522,7 +550,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     private fun disconnectFromHost() {
         Toast.makeText(this, getString(R.string.msg_host_disconnected), Toast.LENGTH_SHORT).show()
         HotspotWakeService.disconnect(this)
-        hidManager.unregisterHidApp()
+        hidManager.disconnect()
         updateControlButtons(BluetoothProfile.STATE_DISCONNECTED)
         binding.tvBtStatus.text = "已主动断开蓝牙连接 (外设已休眠)"
         binding.tvConnectedDevice.text = "未连接目标手机"
@@ -657,26 +685,40 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     }
 
     override fun onAppRegistered(registered: Boolean) {
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val isExplicitDisconnect = sp.getBoolean(BluetoothHidManager.KEY_USER_EXPLICIT_DISCONNECT, false)
+        val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+
         if (registered) {
             binding.tvBtStatus.text = getString(R.string.bt_status_ready)
             binding.btnRetryBt.visibility = View.GONE
             binding.viewStatusDot.backgroundTintList =
                 ContextCompat.getColorStateList(this, R.color.status_connecting)
 
-            // 检查是否开启了“启动时自动重连热点机”
-            val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+            // 检查是否开启了“启动时自动重连热点机”，且用户未主动断开
             val autoConnect = sp.getBoolean(KEY_AUTO_CONNECT, false)
             val boundMac = sp.getString(KEY_BOUND_MAC, null)
-            if (autoConnect && !boundMac.isNullOrEmpty()) {
+            if (autoConnect && !isExplicitDisconnect && !boundMac.isNullOrEmpty()) {
                 binding.root.postDelayed({
                     connectToBoundHost()
                 }, 600)
             }
         } else {
-            binding.tvBtStatus.text = getString(R.string.bt_status_uninitialized)
-            binding.btnRetryBt.visibility = View.VISIBLE
-            binding.viewStatusDot.backgroundTintList =
-                ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            if (isExplicitDisconnect || !autoReconnect) {
+                binding.tvBtStatus.text = if (isExplicitDisconnect) {
+                    "蓝牙外设已休眠 (点击【一键连接】唤醒)"
+                } else {
+                    "蓝牙外设待机中 (已关闭断开自动重连)"
+                }
+                binding.btnRetryBt.visibility = View.GONE
+                binding.viewStatusDot.backgroundTintList =
+                    ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            } else {
+                binding.tvBtStatus.text = getString(R.string.bt_status_uninitialized)
+                binding.btnRetryBt.visibility = View.VISIBLE
+                binding.viewStatusDot.backgroundTintList =
+                    ContextCompat.getColorStateList(this, R.color.status_disconnected)
+            }
         }
     }
 

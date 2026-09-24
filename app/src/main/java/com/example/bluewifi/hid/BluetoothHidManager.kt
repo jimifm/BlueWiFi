@@ -21,8 +21,12 @@ class BluetoothHidManager private constructor(private val context: Context) {
     companion object {
         private const val TAG = "BluetoothHidManager"
         private const val PROXY_TIMEOUT_MS = 6000L
-        private const val PREFS_NAME = "blue_wifi_prefs"
-        private const val KEY_AUTO_RECONNECT_ON_DISCONNECT = "auto_reconnect_on_disconnect"
+        const val PREFS_NAME = "blue_wifi_prefs"
+        const val KEY_AUTO_CONNECT = "auto_connect_on_start"
+        const val KEY_AUTO_RECONNECT_ON_DISCONNECT = "auto_reconnect_on_disconnect"
+        const val KEY_BOUND_MAC = "bound_device_mac"
+        const val KEY_BOUND_NAME = "bound_device_name"
+        const val KEY_USER_EXPLICIT_DISCONNECT = "user_explicit_disconnect"
 
         @Volatile
         private var instance: BluetoothHidManager? = null
@@ -58,8 +62,15 @@ class BluetoothHidManager private constructor(private val context: Context) {
     var lastStatusMessage: String = ""
         private set
 
-    var isUserDisconnecting: Boolean = false
-        private set
+    var isUserDisconnecting: Boolean
+        get() {
+            val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            return sp.getBoolean(KEY_USER_EXPLICIT_DISCONNECT, false)
+        }
+        set(value) {
+            val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            sp.edit().putBoolean(KEY_USER_EXPLICIT_DISCONNECT, value).apply()
+        }
 
     var isUserInitiatedConnect: Boolean = false
         private set
@@ -88,9 +99,14 @@ class BluetoothHidManager private constructor(private val context: Context) {
             isAppRegistered = false
             Log.i(TAG, "HID app unregistered (sleep mode to block incoming host connections)")
             mainHandler.post {
-                val msg = "蓝牙外设已休眠 (阻止对端自动回连)"
+                val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val isExplicit = sp.getBoolean(KEY_USER_EXPLICIT_DISCONNECT, false)
+                val msg = if (isExplicit) "蓝牙外设已休眠 (点击【一键连接】唤醒)" else "蓝牙外设待机中 (阻止对端自动回连)"
                 lastStatusMessage = msg
-                listeners.forEach { it.onStatusMessage(msg) }
+                listeners.forEach {
+                    it.onStatusMessage(msg)
+                    it.onAppRegistered(false)
+                }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error unregistering HID app", e)
@@ -137,12 +153,42 @@ class BluetoothHidManager private constructor(private val context: Context) {
             if (profile == BluetoothProfile.HID_DEVICE) {
                 Log.d(TAG, "Bluetooth HID Device profile connected successfully")
                 hidDevice = proxy as? BluetoothHidDevice
-                val msg = "已获取蓝牙外设代理，正在向系统注册键鼠描述符..."
-                lastStatusMessage = msg
-                mainHandler.post {
-                    listeners.forEach { it.onStatusMessage(msg) }
+
+                val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+                val isExplicitDisconnect = sp.getBoolean(KEY_USER_EXPLICIT_DISCONNECT, false)
+                val hasPendingConnect = !pendingConnectMac.isNullOrEmpty()
+
+                // 核心控制：仅在以下情况才向系统注册外设广播：
+                // 1. 用户当前发起了连接任务（hasPendingConnect）
+                // 2. 或者开启了自动重连且未处于主动断开休眠状态
+                val shouldRegister = hasPendingConnect || (autoReconnect && !isExplicitDisconnect)
+
+                if (shouldRegister) {
+                    val msg = "已获取蓝牙外设代理，正在向系统注册键鼠描述符..."
+                    lastStatusMessage = msg
+                    mainHandler.post {
+                        listeners.forEach { it.onStatusMessage(msg) }
+                    }
+                    registerHidApp()
+                } else {
+                    Log.i(
+                        TAG,
+                        "HID proxy ready, keeping in sleep mode (autoReconnect=$autoReconnect, isExplicitDisconnect=$isExplicitDisconnect)"
+                    )
+                    val msg = if (isExplicitDisconnect) {
+                        "蓝牙外设已休眠 (点击【一键连接】唤醒)"
+                    } else {
+                        "蓝牙外设待机中 (已关闭断开自动重连)"
+                    }
+                    lastStatusMessage = msg
+                    mainHandler.post {
+                        listeners.forEach {
+                            it.onStatusMessage(msg)
+                            it.onAppRegistered(false)
+                        }
+                    }
                 }
-                registerHidApp()
             }
         }
 
@@ -275,9 +321,34 @@ class BluetoothHidManager private constructor(private val context: Context) {
             return
         }
 
-        if (hidDevice != null && isAppRegistered) {
-            listener?.onAppRegistered(true)
-            return
+        if (hidDevice != null) {
+            val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+            val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+            val isExplicitDisconnect = sp.getBoolean(KEY_USER_EXPLICIT_DISCONNECT, false)
+            val hasPendingConnect = !pendingConnectMac.isNullOrEmpty()
+            val shouldRegister = hasPendingConnect || (autoReconnect && !isExplicitDisconnect)
+
+            if (isAppRegistered) {
+                listener?.onAppRegistered(true)
+                return
+            } else if (shouldRegister) {
+                registerHidApp()
+                return
+            } else {
+                val msg = if (isExplicitDisconnect) {
+                    "蓝牙外设已休眠 (点击【一键连接】唤醒)"
+                } else {
+                    "蓝牙外设待机中 (已关闭断开自动重连)"
+                }
+                lastStatusMessage = msg
+                mainHandler.post {
+                    listeners.forEach {
+                        it.onStatusMessage(msg)
+                        it.onAppRegistered(false)
+                    }
+                }
+                return
+            }
         }
 
         isInitializing = true
@@ -327,7 +398,7 @@ class BluetoothHidManager private constructor(private val context: Context) {
      * 注册 HID SDP 配置
      * 采用对标“妙妙触控”的标准纯蓝牙鼠标描述符与多重回退注册策略
      */
-    private fun registerHidApp() {
+    fun registerHidApp() {
         val hid = hidDevice
         if (hid == null) {
             Log.e(TAG, "registerHidApp failed: hidDevice is null")
@@ -600,6 +671,7 @@ class BluetoothHidManager private constructor(private val context: Context) {
             }
         }
         connectedDevice = null
+        unregisterHidApp()
     }
 
     /**
