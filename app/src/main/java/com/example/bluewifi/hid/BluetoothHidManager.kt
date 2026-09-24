@@ -71,6 +71,10 @@ class BluetoothHidManager private constructor(private val context: Context) {
         }
     }
 
+    fun resetUserDisconnecting() {
+        isUserDisconnecting = false
+    }
+
     private val listeners = CopyOnWriteArraySet<HidDeviceListener>()
 
     fun addListener(l: HidDeviceListener) {
