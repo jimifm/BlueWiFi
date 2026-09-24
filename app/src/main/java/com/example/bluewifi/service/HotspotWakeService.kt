@@ -171,6 +171,7 @@ class HotspotWakeService : Service(), HidDeviceListener {
                 if (!targetMac.isNullOrEmpty()) {
                     currentHostMac = targetMac
                     updateNotification("正在连接热点机...", isConnecting = true)
+                    hidManager.markUserInitiatedConnect(true)
                     hidManager.connect(targetMac)
                 }
             }

@@ -21,6 +21,8 @@ class BluetoothHidManager private constructor(private val context: Context) {
     companion object {
         private const val TAG = "BluetoothHidManager"
         private const val PROXY_TIMEOUT_MS = 6000L
+        private const val PREFS_NAME = "blue_wifi_prefs"
+        private const val KEY_AUTO_RECONNECT_ON_DISCONNECT = "auto_reconnect_on_disconnect"
 
         @Volatile
         private var instance: BluetoothHidManager? = null
@@ -58,6 +60,16 @@ class BluetoothHidManager private constructor(private val context: Context) {
 
     var isUserDisconnecting: Boolean = false
         private set
+
+    var isUserInitiatedConnect: Boolean = false
+        private set
+
+    fun markUserInitiatedConnect(initiated: Boolean) {
+        isUserInitiatedConnect = initiated
+        if (initiated) {
+            isUserDisconnecting = false
+        }
+    }
 
     private val listeners = CopyOnWriteArraySet<HidDeviceListener>()
 
@@ -141,15 +153,50 @@ class BluetoothHidManager private constructor(private val context: Context) {
 
         override fun onConnectionStateChanged(device: BluetoothDevice, state: Int) {
             Log.d(TAG, "onConnectionStateChanged: device = ${device.address}, state = $state")
-            lastDeviceState = state
             if (state == BluetoothProfile.STATE_CONNECTED) {
+                val sp = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
+
+                // 核心拦截：如果未开启断开自动重连，且本次连接非用户主动触发（即对端主机系统私自回连）
+                // 或者当前仍处于主动断开状态，立即强行断开并拒绝对端连入
+                if ((!autoReconnect && !isUserInitiatedConnect) || isUserDisconnecting) {
+                    Log.w(
+                        TAG,
+                        "Rejecting incoming host connection from ${device.address}: " +
+                                "autoReconnect=$autoReconnect, isUserInitiated=$isUserInitiatedConnect, isUserDisconnecting=$isUserDisconnecting"
+                    )
+                    try {
+                        hidDevice?.disconnect(device)
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error rejecting incoming connection", e)
+                    }
+                    connectedDevice = null
+                    val msg = if (isUserDisconnecting) {
+                        "已拦截对端主机的回连 (当前处于主动断开状态)"
+                    } else {
+                        "已拦截对端主机的自动回连 (已关闭断开自动重连)"
+                    }
+                    lastStatusMessage = msg
+                    lastDeviceState = BluetoothProfile.STATE_DISCONNECTED
+                    mainHandler.post {
+                        listeners.forEach {
+                            it.onStatusMessage(msg)
+                            it.onDeviceStateChanged(device, BluetoothProfile.STATE_DISCONNECTED)
+                        }
+                    }
+                    return
+                }
+
                 connectedDevice = device
                 isUserDisconnecting = false
+                isUserInitiatedConnect = true
             } else if (state == BluetoothProfile.STATE_DISCONNECTED) {
                 if (connectedDevice?.address == device.address) {
                     connectedDevice = null
                 }
+                isUserInitiatedConnect = false
             }
+            lastDeviceState = state
             mainHandler.post {
                 listeners.forEach { it.onDeviceStateChanged(device, state) }
             }
@@ -228,6 +275,8 @@ class BluetoothHidManager private constructor(private val context: Context) {
      */
     fun reinitialize() {
         release()
+        isUserDisconnecting = false
+        isUserInitiatedConnect = false
         initialize()
     }
 
@@ -437,19 +486,23 @@ class BluetoothHidManager private constructor(private val context: Context) {
         val hid = hidDevice
         if (hid == null) {
             Log.w(TAG, "Cannot connect: hidDevice proxy is null")
+            isUserInitiatedConnect = false
             return false
         }
         if (!isAppRegistered) {
             Log.w(TAG, "Cannot connect: hid application is not registered yet")
+            isUserInitiatedConnect = false
             return false
         }
         Log.d(TAG, "Initiating HID connection to ${device.name} (${device.address})")
-        return try {
+        val success = try {
             hid.connect(device)
         } catch (e: Exception) {
             Log.e(TAG, "Exception calling hid.connect", e)
             false
         }
+        isUserInitiatedConnect = success
+        return success
     }
 
     /**
@@ -472,6 +525,7 @@ class BluetoothHidManager private constructor(private val context: Context) {
      */
     fun disconnect() {
         isUserDisconnecting = true
+        isUserInitiatedConnect = false
         val device = connectedDevice ?: return
         try {
             hidDevice?.disconnect(device)
@@ -485,6 +539,7 @@ class BluetoothHidManager private constructor(private val context: Context) {
      */
     fun release() {
         isUserDisconnecting = true
+        isUserInitiatedConnect = false
         mainHandler.removeCallbacks(timeoutRunnable)
         isInitializing = false
         try {

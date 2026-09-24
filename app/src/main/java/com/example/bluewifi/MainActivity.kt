@@ -217,6 +217,11 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             connectToBoundHost()
         }
 
+        // 主动断开与目标热点手机的连接
+        binding.btnDisconnectHost.setOnClickListener {
+            disconnectFromHost()
+        }
+
         // 绑定/选择已配对的热点手机
         binding.btnBindHost.setOnClickListener {
             showBindHostDialog()
@@ -443,6 +448,18 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
         Toast.makeText(this, getString(R.string.msg_connecting_host, name), Toast.LENGTH_SHORT).show()
         HotspotWakeService.connect(this, mac)
+    }
+
+    /**
+     * 主动断开当前蓝牙连接并阻止对端自动回连
+     */
+    private fun disconnectFromHost() {
+        Toast.makeText(this, getString(R.string.msg_host_disconnected), Toast.LENGTH_SHORT).show()
+        HotspotWakeService.disconnect(this)
+        binding.tvBtStatus.text = "已主动断开蓝牙连接"
+        binding.tvConnectedDevice.text = "未连接目标手机"
+        binding.viewStatusDot.backgroundTintList =
+            ContextCompat.getColorStateList(this, R.color.status_disconnected)
     }
 
     private fun checkAndRequestPermissions() {
