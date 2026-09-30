@@ -27,6 +27,7 @@ sequenceDiagram
     Master->>Scene: 触发系统事件：指定蓝牙外设已连接
     Scene->>Master: 自动开启便携式 Wi-Fi 热点 (AP)
     Slave->>Slave: 监听到蓝牙 HID 连接成功 (STATE_CONNECTED)
+    Slave->>Wifi: 若备用机 WLAN 未开启则自动开启 (受限系统引导一键开启)
     Note over Slave: 延时 5 秒 (支持自定义设置，等待主机 AP 热点广播信号就绪)
     Slave->>Wifi: 自动触发 startScan() 扫描 WLAN
     Wifi-->>Slave: 刷新周围 Wi-Fi 列表 (精准捕获主机热点并自动接入)
@@ -43,6 +44,7 @@ sequenceDiagram
    - 支持**【启动 App 时自动重连热点机】**开关，真正做到“打开 App 即可触发热点并刷新网络”。
 2. **连接成功联动刷新 WLAN 列表 (默认 5 秒，支持灵活设置)**
    - 蓝牙连接成功建立后，界面给予动态倒计时反馈，并在默认 **5 秒后**准时触发 `WifiManager.startScan()` 扫描周围热点。完美规避了主力手机 AP 热点刚打开尚未发射信号的时钟空窗期，大幅提升一次性命中热点的成功率！
+   - **WLAN 未开启自动开启**：目标蓝牙连接成功后若检测到备用机 WLAN 处于关闭状态，会自动开启 WLAN，待系统广播确认开启完成后再执行扫描；Android 10+ 受系统策略限制无法直接开关 WLAN 时，会在界面（后台则为通知栏）引导一键开启，开启后同样自动继续扫描。
    - **支持自定义刷新延时**：界面提供一键设置，支持根据手机热点开启速度自由调节（1秒/2秒/3秒/5秒/8秒/10秒），适配各种机型。
    - 列表实时呈现 Wi-Fi 名称、BSSID、信号百分比、2.4G/5G 频段与加密协议。
    - 界面直观调整：WLAN 列表置顶优先展示，下方保留触控板供快捷控制。
@@ -87,6 +89,7 @@ blueWiFi/
 │       │   │   └── BluetoothHidManager.kt# 单例管理、BluetoothHidDevice 生命周期与报文驱动
 │       │   ├── wifi/
 │       │   │   ├── WifiItem.kt           # Wi-Fi 实体模型
+│       │   │   ├── WifiAutoEnabler.kt    # 蓝牙连接后 WLAN 自动开启与开启完成回调
 │       │   │   └── WifiScanManager.kt    # WLAN 扫描、广播监听与系统设置跳转
 │       │   └── ui/
 │       │       ├── TouchPadView.kt       # 鼠标触控板自定义 View

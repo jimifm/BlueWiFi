@@ -22,6 +22,7 @@ import com.example.bluewifi.MainActivity
 import com.example.bluewifi.R
 import com.example.bluewifi.hid.BluetoothHidManager
 import com.example.bluewifi.hid.HidDeviceListener
+import com.example.bluewifi.wifi.WifiAutoEnabler
 
 @SuppressLint("MissingPermission")
 class HotspotWakeService : Service(), HidDeviceListener {
@@ -87,12 +88,15 @@ class HotspotWakeService : Service(), HidDeviceListener {
     }
 
     private lateinit var hidManager: BluetoothHidManager
+    private lateinit var wifiAutoEnabler: WifiAutoEnabler
     private var wakeLock: PowerManager.WakeLock? = null
     private val mainHandler = Handler(Looper.getMainLooper())
 
     private var currentHostName: String? = null
     private var currentHostMac: String? = null
     private var connectionState: Int = BluetoothProfile.STATE_DISCONNECTED
+    /** WLAN 未开启且系统不允许自动开启时，在通知栏提供一键开启入口 */
+    private var isWifiOffHintVisible = false
 
     // 心跳保活任务
     private val keepAliveRunnable = object : Runnable {
@@ -129,6 +133,19 @@ class HotspotWakeService : Service(), HidDeviceListener {
 
         hidManager = BluetoothHidManager.getInstance(applicationContext)
         hidManager.addListener(this)
+
+        wifiAutoEnabler = WifiAutoEnabler(this).apply {
+            onWifiEnabledListener = {
+                Log.i(TAG, "WLAN turned on, hotspot scan can proceed")
+                mainHandler.post {
+                    isWifiOffHintVisible = false
+                    if (connectionState == BluetoothProfile.STATE_CONNECTED) {
+                        updateNotification("WLAN 已开启，热点可被扫描接入")
+                    }
+                }
+            }
+            registerStateReceiver()
+        }
 
         initWakeLock()
         createNotificationChannel()
@@ -297,6 +314,14 @@ class HotspotWakeService : Service(), HidDeviceListener {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // 快捷操作：WLAN 未开启时引导用户一键开启
+        val pOpenWifiPanel = PendingIntent.getActivity(
+            this,
+            3,
+            wifiAutoEnabler.buildWifiPanelIntent(),
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         val builder = NotificationCompat.Builder(this, CHANNEL_ID)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
@@ -305,6 +330,10 @@ class HotspotWakeService : Service(), HidDeviceListener {
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .addAction(0, "一键重连", pReconnect)
+
+        if (isWifiOffHintVisible) {
+            builder.addAction(0, "开启WLAN", pOpenWifiPanel)
+        }
 
         if (connectionState == BluetoothProfile.STATE_CONNECTED) {
             builder.addAction(0, "断开", pDisconnect)
@@ -364,6 +393,9 @@ class HotspotWakeService : Service(), HidDeviceListener {
                 mainHandler.postDelayed(keepAliveRunnable, KEEP_ALIVE_INTERVAL_MS)
 
                 updateNotification("已稳定连接: ${device.name ?: device.address} (心跳保活中)")
+
+                // 目标蓝牙连接成功：若 WLAN 未开启则自动开启，保证主机热点可被发现并接入
+                autoEnableWifiIfNeeded()
             }
 
             BluetoothProfile.STATE_CONNECTING -> {
@@ -374,6 +406,7 @@ class HotspotWakeService : Service(), HidDeviceListener {
                 // 停止心跳
                 mainHandler.removeCallbacks(keepAliveRunnable)
                 releaseWakeLock()
+                isWifiOffHintVisible = false
 
                 val sp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                 val autoReconnect = sp.getBoolean(KEY_AUTO_RECONNECT_ON_DISCONNECT, true)
@@ -411,12 +444,34 @@ class HotspotWakeService : Service(), HidDeviceListener {
 
     override fun onBind(intent: Intent?): IBinder? = null
 
+    /**
+     * 目标蓝牙连接成功后的 WLAN 联动：WLAN 未开启则自动开启；
+     * 若被系统策略拦截 (Android 10+ 普通应用常见)，则在通知栏提供一键开启入口。
+     */
+    private fun autoEnableWifiIfNeeded() {
+        if (wifiAutoEnabler.isWifiEnabled()) {
+            isWifiOffHintVisible = false
+            return
+        }
+
+        if (wifiAutoEnabler.tryEnableWifi()) {
+            isWifiOffHintVisible = false
+            Log.i(TAG, "WLAN was off, auto enable requested")
+            updateNotification("检测到 WLAN 未开启，已自动开启 WLAN")
+        } else {
+            isWifiOffHintVisible = true
+            Log.w(TAG, "WLAN is off and system blocks auto enable, prompting user")
+            updateNotification("WLAN 未开启，请点击通知中的【开启WLAN】后自动接入热点")
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         Log.i(TAG, "HotspotWakeService onDestroy")
         mainHandler.removeCallbacks(keepAliveRunnable)
         mainHandler.removeCallbacks(reconnectRunnable)
         releaseWakeLock()
+        wifiAutoEnabler.unregisterStateReceiver()
         hidManager.removeListener(this)
     }
 }

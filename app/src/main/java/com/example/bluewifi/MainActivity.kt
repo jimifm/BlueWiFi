@@ -27,6 +27,7 @@ import com.example.bluewifi.service.HotspotWakeService
 import com.example.bluewifi.ui.TouchPadView
 import com.example.bluewifi.ui.WifiListAdapter
 import com.example.bluewifi.wifi.WifiItem
+import com.example.bluewifi.wifi.WifiAutoEnabler
 import com.example.bluewifi.wifi.WifiScanManager
 import com.google.android.material.snackbar.Snackbar
 
@@ -48,9 +49,12 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
     private lateinit var binding: ActivityMainBinding
     private lateinit var hidManager: BluetoothHidManager
     private lateinit var wifiScanManager: WifiScanManager
+    private lateinit var wifiAutoEnabler: WifiAutoEnabler
     private lateinit var wifiAdapter: WifiListAdapter
     private var isBtReceiverRegistered = false
     private var pendingScanRunnable: Runnable? = null
+    /** 蓝牙连接成功时若 WLAN 未开启，标记等待 WLAN 开启完成后再刷新列表 */
+    private var pendingWifiAutoEnableScan = false
 
     // 蓝牙状态广播接收器
     private val bluetoothStateReceiver = object : BroadcastReceiver() {
@@ -115,6 +119,10 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         hidManager.addListener(this)
 
         wifiScanManager = WifiScanManager(this)
+        wifiAutoEnabler = WifiAutoEnabler(this).apply {
+            onWifiEnabledListener = { onWifiTurnedOn() }
+            registerStateReceiver()
+        }
 
         val filter = IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED)
         registerReceiver(bluetoothStateReceiver, filter)
@@ -673,6 +681,88 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
         wifiScanManager.startScan()
     }
 
+    /**
+     * 目标蓝牙连接成功后的自动化联动：
+     * 1) 若 WLAN 未开启，先尝试自动开启 WLAN；
+     * 2) WLAN 就绪后再延时刷新 WLAN 列表，并由扫描回调自动接入目标热点。
+     */
+    private fun handleHostConnected(delaySec: Int) {
+        if (wifiAutoEnabler.isWifiEnabled()) {
+            pendingWifiAutoEnableScan = false
+            scheduleWifiScan(
+                delaySec * 1000L,
+                "已连接热点机！等待主机热点开启，${delaySec}秒后自动刷新..."
+            )
+            return
+        }
+
+        // 目标蓝牙已连接但 WLAN 处于关闭状态：自动开启 WLAN，避免后续扫描直接失败
+        pendingWifiAutoEnableScan = true
+
+        if (wifiAutoEnabler.tryEnableWifi()) {
+            // 开启指令已下发，待收到 WLAN 已开启广播后再刷新列表 (见 onWifiTurnedOn)
+            android.util.Log.d("MainActivity", "WLAN was off, auto enable requested")
+            Snackbar.make(binding.root, "检测到 WLAN 未开启，正在自动为您开启...", Snackbar.LENGTH_LONG).show()
+        } else {
+            // Android 10+ 系统限制普通应用直接开关 WLAN，引导用户一键开启
+            Snackbar.make(
+                binding.root,
+                "当前系统限制自动开启 WLAN，请点击【去开启】打开 WLAN 后会自动刷新列表",
+                Snackbar.LENGTH_INDEFINITE
+            ).setAction("去开启") {
+                openWifiPanel()
+            }.show()
+        }
+    }
+
+    /**
+     * WLAN 自动开启完成（或用户手动开启）后的回调：继续刷新热点列表
+     */
+    private fun onWifiTurnedOn() {
+        if (!pendingWifiAutoEnableScan) return
+        pendingWifiAutoEnableScan = false
+
+        val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
+        val delaySec = sp.getInt(KEY_WLAN_SCAN_DELAY_SEC, DEFAULT_WLAN_SCAN_DELAY_SEC)
+        Snackbar.make(binding.root, "WLAN 已开启，${delaySec} 秒后自动刷新热点列表...", Snackbar.LENGTH_SHORT).show()
+        scheduleWifiScan(delaySec * 1000L, null)
+    }
+
+    /**
+     * 延时刷新 WLAN 列表 (可被新的连接事件覆盖)
+     */
+    private fun scheduleWifiScan(delayMs: Long, message: String?) {
+        pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
+
+        if (!message.isNullOrEmpty()) {
+            Snackbar.make(binding.root, message, Snackbar.LENGTH_SHORT)
+                .setAction("立即刷新") {
+                    pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
+                    performWifiScan()
+                }
+                .show()
+        }
+
+        val scanRunnable = Runnable {
+            if (isDestroyed || isFinishing) return@Runnable
+            performWifiScan()
+            Toast.makeText(this@MainActivity, "已自动为您刷新 WLAN 列表", Toast.LENGTH_SHORT).show()
+        }
+        pendingScanRunnable = scanRunnable
+        binding.root.postDelayed(scanRunnable, delayMs)
+    }
+
+    /**
+     * 打开系统 WLAN 设置面板 (Android 10+ 为悬浮开关面板)，便于用户一键开启 WLAN
+     */
+    private fun openWifiPanel() {
+        try {
+            startActivity(wifiAutoEnabler.buildWifiPanelIntent())
+        } catch (e: Exception) {
+            wifiScanManager.openWifiSettings()
+        }
+    }
+
     private fun updateCurrentConnectedWifi() {
         val ssid = wifiScanManager.getCurrentConnectedSsid()
         binding.tvCurrentWifi.text = getString(R.string.wifi_current_connected, ssid)
@@ -733,27 +823,11 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
                     ContextCompat.getColorStateList(this, R.color.status_connected)
                 updateControlButtons(BluetoothProfile.STATE_CONNECTED)
 
-                // 核心功能点：蓝牙连接成功后延时触发 WLAN 扫描刷新 (等待主机热点无线广播就绪)
+                // 核心功能点：目标蓝牙连接成功后，若 WLAN 未开启则先自动开启，
+                // 再延时触发 WLAN 扫描刷新 (等待主机热点无线广播就绪)
                 val sp = getSharedPreferences(PREFS_NAME, MODE_PRIVATE)
                 val delaySec = sp.getInt(KEY_WLAN_SCAN_DELAY_SEC, DEFAULT_WLAN_SCAN_DELAY_SEC)
-                val delayMs = delaySec * 1000L
-
-                pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
-
-                Snackbar.make(binding.root, "已连接热点机！等待主机热点开启，${delaySec}秒后自动刷新...", Snackbar.LENGTH_SHORT)
-                    .setAction("立即刷新") {
-                        pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
-                        performWifiScan()
-                    }
-                    .show()
-
-                val scanRunnable = Runnable {
-                    if (isDestroyed || isFinishing) return@Runnable
-                    performWifiScan()
-                    Toast.makeText(this@MainActivity, "已自动为您刷新 WLAN 列表", Toast.LENGTH_SHORT).show()
-                }
-                pendingScanRunnable = scanRunnable
-                binding.root.postDelayed(scanRunnable, delayMs)
+                handleHostConnected(delaySec)
             }
 
             BluetoothProfile.STATE_CONNECTING -> {
@@ -765,6 +839,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
 
             BluetoothProfile.STATE_DISCONNECTED -> {
                 pendingScanRunnable?.let { binding.root.removeCallbacks(it) }
+                pendingWifiAutoEnableScan = false
                 binding.tvBtStatus.text = getString(R.string.bt_status_disconnected)
                 binding.tvConnectedDevice.text = "未连接目标手机"
                 binding.viewStatusDot.backgroundTintList =
@@ -808,6 +883,7 @@ class MainActivity : AppCompatActivity(), HidDeviceListener, TouchPadView.TouchP
             isBtReceiverRegistered = false
         }
         wifiScanManager.unregisterReceiver()
+        wifiAutoEnabler.unregisterStateReceiver()
         // 关键改动：MainActivity 销毁时只移除当前 UI 的监听器，切勿调用 release()，
         // 蓝牙连接与外设注册由 HotspotWakeService 前台服务在后台持续守护
         hidManager.removeListener(this)
