@@ -445,23 +445,28 @@ class HotspotWakeService : Service(), HidDeviceListener {
     override fun onBind(intent: Intent?): IBinder? = null
 
     /**
-     * 目标蓝牙连接成功后的 WLAN 联动：WLAN 未开启则自动开启；
-     * 若被系统策略拦截 (Android 10+ 普通应用常见)，则在通知栏提供一键开启入口。
+     * 目标蓝牙连接成功后的 WLAN 联动：WLAN 未开启则自动开启并等待系统确认；
+     * 若被系统策略拦截 (Android 10+ 普通应用无法直接开关 WLAN)，则在通知栏提供一键开启入口。
      */
     private fun autoEnableWifiIfNeeded() {
-        if (wifiAutoEnabler.isWifiEnabled()) {
-            isWifiOffHintVisible = false
-            return
-        }
+        wifiAutoEnabler.enableIfNeeded { result ->
+            when (result) {
+                WifiAutoEnabler.EnableResult.ALREADY_ON -> {
+                    isWifiOffHintVisible = false
+                }
 
-        if (wifiAutoEnabler.tryEnableWifi()) {
-            isWifiOffHintVisible = false
-            Log.i(TAG, "WLAN was off, auto enable requested")
-            updateNotification("检测到 WLAN 未开启，已自动开启 WLAN")
-        } else {
-            isWifiOffHintVisible = true
-            Log.w(TAG, "WLAN is off and system blocks auto enable, prompting user")
-            updateNotification("WLAN 未开启，请点击通知中的【开启WLAN】后自动接入热点")
+                WifiAutoEnabler.EnableResult.ENABLED -> {
+                    isWifiOffHintVisible = false
+                    Log.i(TAG, "WLAN was off and has been auto enabled")
+                    updateNotification("检测到 WLAN 未开启，已自动开启 WLAN")
+                }
+
+                WifiAutoEnabler.EnableResult.BLOCKED -> {
+                    isWifiOffHintVisible = true
+                    Log.w(TAG, "WLAN is off and system blocks auto enable, prompting user")
+                    updateNotification("WLAN 未开启，请点击通知中的【开启WLAN】后自动接入热点")
+                }
+            }
         }
     }
 
@@ -471,6 +476,7 @@ class HotspotWakeService : Service(), HidDeviceListener {
         mainHandler.removeCallbacks(keepAliveRunnable)
         mainHandler.removeCallbacks(reconnectRunnable)
         releaseWakeLock()
+        wifiAutoEnabler.cancelPendingEnableCheck()
         wifiAutoEnabler.unregisterStateReceiver()
         hidManager.removeListener(this)
     }
